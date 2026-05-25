@@ -128,6 +128,30 @@ az role assignment create `
 
 ### Step 4: Build and Deploy App Code
 
+You have two options. Use **Option A** if you just want to ship what's already in the repo; use **Option B** if you've modified code and need a fresh build.
+
+#### Option A — Quick deploy using the pre-built `deploy.zip` (recommended)
+
+A ready-to-deploy package (`deploy.zip`) is checked in at the repo root. It contains `server.js`, `package.json`, `package-lock.json`, the Angular source under `src/`, and the pre-built bundle under `dist/spotvm-dashboard/browser/`. On upload, App Service runs `npm install` (which triggers `postinstall` → `ng build`) so Angular is rebuilt on the host before `node server.js` starts.
+
+```powershell
+# From the repo root
+az webapp deploy `
+  --resource-group $RG `
+  --name spotvm-hdfc-webapp `
+  --src-path .\deploy.zip `
+  --type zip --async true
+```
+
+> First deploy can take 3–5 minutes while Oryx installs dependencies and rebuilds Angular. Tail logs with:
+> ```powershell
+> az webapp log tail --resource-group $RG --name spotvm-hdfc-webapp
+> ```
+
+#### Option B — Build locally and create a fresh zip
+
+Use this when you've changed `server.js`, the Angular source, or dependencies.
+
 ```powershell
 cd webapp
 
