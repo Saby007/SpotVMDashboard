@@ -91,11 +91,6 @@ export class AppComponent implements OnInit, OnDestroy {
           this.selectedFamilies = [...this.filteredFamilyKeys];
         }
         this.configLoading = false;
-        // Kick off quota tracking for the default subscription
-        if (this.selectedSubscription) {
-          this.refreshQuota();
-          this.startQuotaAutoRefresh();
-        }
       },
       error: (err) => {
         console.error('Failed to load config', err);
@@ -148,7 +143,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   onSubscriptionChange(): void {
-    this.refreshQuota();
+    // No-op: top-level API quota indicator was removed because it was a local estimate
+    // that didn't match Azure's actual throttling behavior.
   }
 
   get selectedSkus(): string[] {

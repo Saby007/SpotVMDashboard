@@ -66,26 +66,6 @@
       </div>
     </div>
 
-    <!-- API Quota Indicator -->
-    <div *ngIf="quotaInfo" class="quota-row" [ngClass]="quotaClass()">
-      <div class="quota-header">
-        <span class="quota-label">
-          {{ quotaInfo.apiName || 'Spot Placement Score API' }} — Quota Remaining
-          <span class="info-icon" tabindex="0">i
-            <span class="tooltip tooltip-bottom">
-              Approximate per-subscription budget for the <b>{{ quotaInfo.apiName || 'Spot Placement Score API' }}</b> in the current 1-hour window. Each batch of 5 SKUs uses one call. When this hits 0, you'll see 429 errors until the window resets.
-            </span>
-          </span>
-        </span>
-        <span class="quota-value">
-          <strong>{{ quotaInfo.percentRemaining }}%</strong>
-          <span class="quota-detail">({{ quotaInfo.remaining }} / {{ quotaInfo.max }} calls, resets in {{ quotaResetLabel() }})</span>
-        </span>
-      </div>
-      <div class="quota-bar-track">
-        <div class="quota-bar-fill" [style.width.%]="quotaInfo.percentRemaining"></div>
-      </div>
-    </div>
   </section>
 
   <!-- Errors -->
