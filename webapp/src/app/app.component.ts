@@ -335,6 +335,15 @@ export class AppComponent implements OnInit, OnDestroy {
     return 'quota-bar-critical';
   }
 
+  /** CSS class for the regional Spot vCPU pool bar based on % remaining */
+  vmQuotaClass(): string {
+    if (!this.vmQuota) return 'quota-bar-good';
+    const p = this.vmQuota.percentRemaining;
+    if (p >= 50) return 'quota-bar-good';
+    if (p >= 20) return 'quota-bar-warn';
+    return 'quota-bar-critical';
+  }
+
   /** Friendly "resets in" label, e.g., "43 min" or "7 sec" */
   quotaResetLabel(): string {
     if (!this.quotaInfo) return '';

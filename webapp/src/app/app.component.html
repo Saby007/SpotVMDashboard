@@ -86,6 +86,27 @@
         <div class="quota-bar-fill" [style.width.%]="quotaInfo.percentRemaining"></div>
       </div>
     </div>
+
+    <!-- Regional Spot vCPU pool (lowPriorityCores) -->
+    <div *ngIf="vmQuota" class="quota-row vm-quota-row" [ngClass]="vmQuotaClass()">
+      <div class="quota-header">
+        <span class="quota-label">
+          Regional Spot vCPU Pool — {{ vmQuota.region }}
+          <span class="info-icon" tabindex="0">i
+            <span class="tooltip tooltip-bottom">
+              Live <b>lowPriorityCores</b> usage from <code>Microsoft.Compute/locations/{{ vmQuota.region }}/usages</code>. Shows how much of your subscription's regional Spot vCPU pool is currently consumed across all Spot VMs in this region. Snapshot is taken at the start of each “Get Scores” run.
+            </span>
+          </span>
+        </span>
+        <span class="quota-value">
+          <strong>{{ vmQuota.percentRemaining }}%</strong>
+          <span class="quota-detail">({{ vmQuota.currentValue }} / {{ vmQuota.limit }} vCPUs used)</span>
+        </span>
+      </div>
+      <div class="quota-bar-track">
+        <div class="quota-bar-fill" [style.width.%]="vmQuota.percentRemaining"></div>
+      </div>
+    </div>
   </section>
 
   <!-- Errors -->
@@ -206,7 +227,7 @@
             </th>
             <th class="has-tooltip th-quota-col">
               <span class="th-label">Quota</span>
-              <span class="th-tooltip th-tooltip-right">Per-row icon shows whether this SKU has quota in this region. The percentage reflects the regional Spot vCPU pool (<b>lowPriorityCores</b>). Request a quota increase via Azure Portal → Quotas if needed.</span>
+              <span class="th-tooltip th-tooltip-right">Per-SKU-family Spot quota signal from the Placement Score API. <b>✓ Available</b> = your subscription has quota allocated for this SKU family in this region. The aggregate <b>regional Spot vCPU pool</b> (lowPriorityCores) is shown separately in the top bar.</span>
             </th>
           </tr>
         </thead>
@@ -222,15 +243,8 @@
               <span class="eviction-badge" [ngClass]="evictionClass(s.evictionRate)">{{ evictionRate(s.evictionRate) }}</span>
             </td>
             <td>
-              <span [class.quota-yes]="s.isQuotaAvailable" [class.quota-no]="!s.isQuotaAvailable" class="quota-cell">
-                <span class="quota-icon">{{ s.isQuotaAvailable ? '✓' : '✗' }}</span>
-                <ng-container *ngIf="vmQuota; else fallbackQuota">
-                  <span class="quota-pct">{{ vmQuota.percentRemaining }}% free</span>
-                  <span class="quota-detail-sm">({{ vmQuota.limit - vmQuota.currentValue }} / {{ vmQuota.limit }} vCPUs)</span>
-                </ng-container>
-                <ng-template #fallbackQuota>
-                  <span>{{ s.isQuotaAvailable ? 'Available' : 'Unavailable' }}</span>
-                </ng-template>
+              <span [class.quota-yes]="s.isQuotaAvailable" [class.quota-no]="!s.isQuotaAvailable">
+                {{ s.isQuotaAvailable ? '✓ Available' : '✗ Unavailable' }}
               </span>
             </td>
           </tr>

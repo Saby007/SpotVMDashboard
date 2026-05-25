@@ -777,3 +777,8 @@ th.has-tooltip:focus-within .th-tooltip {
   font-weight: 400;
 }
 
+/* Spacing between the API quota row and the regional Spot vCPU pool row */
+.vm-quota-row {
+  margin-top: 0.5rem;
+}
+
