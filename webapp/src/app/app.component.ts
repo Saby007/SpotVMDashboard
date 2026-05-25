@@ -6,7 +6,7 @@ import { MsalService, MsalBroadcastService, MSAL_GUARD_CONFIG, MsalGuardConfigur
 import { AuthenticationResult, EventMessage, EventType, InteractionStatus, RedirectRequest } from '@azure/msal-browser';
 import { SpotScoreService, StreamEvent } from './services/spot-score.service';
 import { DashboardConfig, QuotaInfo, SpotScore, Subscription, UserInfo, VmQuotaInfo } from './models/spot-score.model';
-import { API_SCOPE } from './auth.config';
+import { ARM_DEFAULT_SCOPES } from './auth.config';
 
 @Component({
   selector: 'app-root',
@@ -137,7 +137,7 @@ export class AppComponent implements OnInit, OnDestroy {
   login(): void {
     const request: RedirectRequest = {
       ...(this.msalGuardConfig.authRequest as RedirectRequest),
-      scopes: [API_SCOPE]
+      scopes: ARM_DEFAULT_SCOPES
     };
     this.msal.loginRedirect(request);
   }
@@ -149,16 +149,25 @@ export class AppComponent implements OnInit, OnDestroy {
   private loadUserAndData(): void {
     this.spotService.getMe().subscribe({
       next: (u) => this.zone.run(() => { this.user = u; }),
-      error: (err) => console.warn('Failed to load /api/me', err)
+      error: (err) => console.warn('Failed to read user info', err)
     });
     this.spotService.getSubscriptions().subscribe({
       next: (subs) => this.zone.run(() => {
         this.subscriptions = subs;
         if (subs.length === 1) this.selectedSubscription = subs[0].id;
+        // Load config once we know which subscription to query the SKU catalog against.
+        this.loadConfig(subs[0]?.id);
       }),
-      error: (err) => console.error('Failed to load /api/subscriptions', err)
+      error: (err) => this.zone.run(() => {
+        console.error('Failed to load subscriptions', err);
+        // Still try to render the static config so the UI isn't blank.
+        this.loadConfig(undefined);
+      })
     });
-    this.spotService.getConfig().subscribe({
+  }
+
+  private loadConfig(subscriptionId: string | undefined): void {
+    this.spotService.getConfig(subscriptionId).subscribe({
       next: (cfg) => this.zone.run(() => {
         this.config = cfg;
         this.familyKeys = Object.keys(cfg.skuFamilies);
