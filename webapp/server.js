@@ -212,6 +212,43 @@ function recordApiCall(subscriptionId) {
   return getQuotaSnapshot(subscriptionId);
 }
 
+// --- Spot (low-priority) VM core quota lookup for a region ---
+// Calls Microsoft.Compute usages API and returns the lowPriorityCores entry, which is the
+// per-region pool of vCPUs available for Spot VMs (shared across all SKUs in that region).
+// Returns null if the call fails or the entry is not found in the response.
+async function fetchSpotVmQuota(token, subscriptionId, region) {
+  try {
+    const url = `https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/locations/${encodeURIComponent(region)}/usages?api-version=2024-07-01`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      console.warn(`Spot quota lookup failed for ${region}: HTTP ${response.status}`);
+      return null;
+    }
+    const data = await response.json();
+    const entry = (data.value || []).find(u => (u.name && u.name.value || '').toLowerCase() === 'lowprioritycores');
+    if (!entry) return null;
+    const currentValue = entry.currentValue || 0;
+    const limit = entry.limit || 0;
+    const percentUsed = limit > 0 ? Math.round((currentValue / limit) * 100) : 0;
+    const percentRemaining = Math.max(0, 100 - percentUsed);
+    return {
+      region,
+      currentValue,
+      limit,
+      percentUsed,
+      percentRemaining,
+      unit: entry.unit || 'Count',
+      label: (entry.name && entry.name.localizedValue) || 'Low Priority vCPUs'
+    };
+  } catch (err) {
+    console.warn(`Spot quota lookup error for ${region}:`, err.message);
+    return null;
+  }
+}
+
 // Cache credential instance (thread-safe, handles token refresh internally)
 let credential = null;
 function getCredential() {
@@ -384,7 +421,7 @@ app.get('/api/quota', (req, res) => {
   if (!CONFIG.subscriptions.find(s => s.id === subscriptionId)) {
     return res.status(403).json({ error: 'Subscription not in allowed list' });
   }
-  res.json(getQuotaSnapshot(subscriptionId));
+  res.json({ apiName: 'Spot Placement Score API', ...getQuotaSnapshot(subscriptionId) });
 });
 
 // POST /api/scores — fetches Spot Placement Scores for given parameters
@@ -434,7 +471,13 @@ app.post('/api/scores', async (req, res) => {
 
     send({ type: 'start', totalBatches, totalSkus: skus.length });
     // Emit initial quota snapshot so the UI shows current usage even before the first batch
-    send({ type: 'quota', ...getQuotaSnapshot(subscriptionId) });
+    send({ type: 'quota', apiName: 'Spot Placement Score API', ...getQuotaSnapshot(subscriptionId) });
+
+    // Look up regional Spot vCPU pool quota (best-effort; won't block scoring if it fails)
+    const vmQuota = await fetchSpotVmQuota(tokenResponse.token, subscriptionId, region);
+    if (vmQuota) {
+      send({ type: 'vmQuota', ...vmQuota });
+    }
 
     for (let i = 0; i < skus.length; i += CONFIG.batchSize) {
       if (res.writableEnded) break; // client disconnected
@@ -473,7 +516,7 @@ app.post('/api/scores', async (req, res) => {
           send({ type: 'scores', batchIndex, count: scores.length, scores });
           // Record the call against our quota budget and broadcast the new snapshot
           const snap = recordApiCall(subscriptionId);
-          send({ type: 'quota', ...snap });
+          send({ type: 'quota', apiName: 'Spot Placement Score API', ...snap });
           success = true;
           break;
         } else if (response.status === 429) {

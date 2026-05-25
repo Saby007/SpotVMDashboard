@@ -689,3 +689,91 @@ th.sortable {
 th.sortable .info-icon {
   cursor: help;
 }
+
+/* === Column-header hover tooltips (whole-th trigger, opens below header) === */
+
+th.has-tooltip {
+  position: relative;
+}
+th.has-tooltip:not(.sortable) {
+  cursor: help;
+}
+.th-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.sort-caret {
+  font-size: 0.7em;
+  opacity: 0.85;
+}
+
+.th-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 240px;
+  max-width: 320px;
+  padding: 0.65rem 0.8rem;
+  background: #0f172a;
+  color: #f1f5f9;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-transform: none;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 200;
+  transform: translateY(-6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.th-tooltip::after {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 20px;
+  border: 6px solid transparent;
+  border-bottom-color: #0f172a;
+}
+/* Right-anchored variant for the last column (Quota) to avoid horizontal overflow */
+.th-tooltip.th-tooltip-right {
+  left: auto;
+  right: 0;
+}
+.th-tooltip.th-tooltip-right::after {
+  left: auto;
+  right: 20px;
+}
+th.has-tooltip:hover .th-tooltip,
+th.has-tooltip:focus-within .th-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* === Quota column cell layout (icon + percentage + detail) === */
+.quota-cell {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+}
+.quota-cell .quota-icon {
+  font-weight: 700;
+}
+.quota-cell .quota-pct {
+  font-weight: 600;
+}
+.quota-cell .quota-detail-sm {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+

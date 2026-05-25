@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 import { DashboardConfig, QuotaInfo } from '../models/spot-score.model';
 
 export interface StreamEvent {
-  type: 'start' | 'batch' | 'scores' | 'retry' | 'error' | 'done' | 'fatal' | 'quota';
+  type: 'start' | 'batch' | 'scores' | 'retry' | 'error' | 'done' | 'fatal' | 'quota' | 'vmQuota';
   totalBatches?: number;
   totalSkus?: number;
   batchIndex?: number;
@@ -18,11 +18,19 @@ export interface StreamEvent {
   message?: string;
   timestamp?: string;
   // quota event fields
+  apiName?: string;
   used?: number;
   max?: number;
   remaining?: number;
   percentRemaining?: number;
   resetsInSec?: number;
+  // vmQuota event fields
+  region?: string;
+  currentValue?: number;
+  limit?: number;
+  percentUsed?: number;
+  unit?: string;
+  label?: string;
 }
 
 @Injectable({ providedIn: 'root' })

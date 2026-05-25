@@ -2,7 +2,7 @@ import { Component, OnInit, OnDestroy, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { SpotScoreService, StreamEvent } from './services/spot-score.service';
-import { DashboardConfig, QuotaInfo, SpotScore } from './models/spot-score.model';
+import { DashboardConfig, QuotaInfo, SpotScore, VmQuotaInfo } from './models/spot-score.model';
 
 @Component({
   selector: 'app-root',
@@ -43,6 +43,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   // API Quota tracking
   quotaInfo: QuotaInfo | null = null;
+  vmQuota: VmQuotaInfo | null = null;
   private quotaRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
   // Loading animation
@@ -167,6 +168,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.scores = [];
     this.errors = [];
     this.timestamp = '';
+    this.vmQuota = null;
     this.progressStatus = 'Connecting...';
     this.progressBatch = 0;
     this.progressTotal = 0;
@@ -239,11 +241,24 @@ export class AppComponent implements OnInit, OnDestroy {
 
       case 'quota':
         this.quotaInfo = {
+          apiName: event.apiName ?? 'Spot Placement Score API',
           used: event.used ?? 0,
           max: event.max ?? 0,
           remaining: event.remaining ?? 0,
           percentRemaining: event.percentRemaining ?? 0,
           resetsInSec: event.resetsInSec ?? 0
+        };
+        break;
+
+      case 'vmQuota':
+        this.vmQuota = {
+          region: event.region ?? '',
+          currentValue: event.currentValue ?? 0,
+          limit: event.limit ?? 0,
+          percentUsed: event.percentUsed ?? 0,
+          percentRemaining: event.percentRemaining ?? 0,
+          unit: event.unit ?? 'Count',
+          label: event.label ?? 'Low Priority vCPUs'
         };
         break;
     }

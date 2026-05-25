@@ -70,10 +70,10 @@
     <div *ngIf="quotaInfo" class="quota-row" [ngClass]="quotaClass()">
       <div class="quota-header">
         <span class="quota-label">
-          API Quota Remaining
+          {{ quotaInfo.apiName || 'Spot Placement Score API' }} — Quota Remaining
           <span class="info-icon" tabindex="0">i
             <span class="tooltip tooltip-bottom">
-              Approximate per-subscription Spot Placement Score API budget for the current 1-hour window. Each batch of 5 SKUs uses one call. When this hits 0, you'll see 429 errors until the window resets.
+              Approximate per-subscription budget for the <b>{{ quotaInfo.apiName || 'Spot Placement Score API' }}</b> in the current 1-hour window. Each batch of 5 SKUs uses one call. When this hits 0, you'll see 429 errors until the window resets.
             </span>
           </span>
         </span>
@@ -184,63 +184,29 @@
       <table>
         <thead>
           <tr>
-            <th (click)="sortBy('sku')" class="sortable">
-              <span class="th-content">
-                <span>SKU
-                  <span *ngIf="sortColumn === 'sku'">{{ sortAsc ? '▲' : '▼' }}</span>
-                </span>
-                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
-                  <span class="tooltip">Azure VM size identifier (e.g., Standard_D4s_v5). Determines vCPU count, memory, disk type, and supported features such as accelerated networking.</span>
-                </span>
-              </span>
+            <th (click)="sortBy('sku')" class="sortable has-tooltip">
+              <span class="th-label">SKU<span *ngIf="sortColumn === 'sku'" class="sort-caret">{{ sortAsc ? '▲' : '▼' }}</span></span>
+              <span class="th-tooltip">Azure VM size identifier (e.g., Standard_D4s_v5). Determines vCPU count, memory, disk type, and supported features such as accelerated networking.</span>
             </th>
-            <th (click)="sortBy('region')" class="sortable">
-              <span class="th-content">
-                <span>Region
-                  <span *ngIf="sortColumn === 'region'">{{ sortAsc ? '▲' : '▼' }}</span>
-                </span>
-                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
-                  <span class="tooltip">Azure datacenter region (e.g., centralindia, eastus2) where this Spot VM would be deployed. Latency, pricing, and capacity vary per region.</span>
-                </span>
-              </span>
+            <th (click)="sortBy('region')" class="sortable has-tooltip">
+              <span class="th-label">Region<span *ngIf="sortColumn === 'region'" class="sort-caret">{{ sortAsc ? '▲' : '▼' }}</span></span>
+              <span class="th-tooltip">Azure datacenter region (e.g., centralindia, eastus2) where this Spot VM would be deployed. Latency, pricing, and capacity vary per region.</span>
             </th>
-            <th (click)="sortBy('availabilityZone')" class="sortable">
-              <span class="th-content">
-                <span>Zone
-                  <span *ngIf="sortColumn === 'availabilityZone'">{{ sortAsc ? '▲' : '▼' }}</span>
-                </span>
-                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
-                  <span class="tooltip">Availability Zone within the region (1, 2, or 3). Zones are physically isolated datacenters — spreading VMs across zones protects against zone-level failures.</span>
-                </span>
-              </span>
+            <th (click)="sortBy('availabilityZone')" class="sortable has-tooltip">
+              <span class="th-label">Zone<span *ngIf="sortColumn === 'availabilityZone'" class="sort-caret">{{ sortAsc ? '▲' : '▼' }}</span></span>
+              <span class="th-tooltip">Availability Zone within the region (1, 2, or 3). Zones are physically isolated datacenters — spreading VMs across zones protects against zone-level failures.</span>
             </th>
-            <th (click)="sortBy('score')" class="sortable">
-              <span class="th-content">
-                <span>Score
-                  <span *ngIf="sortColumn === 'score'">{{ sortAsc ? '▲' : '▼' }}</span>
-                </span>
-                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
-                  <span class="tooltip">Azure Spot Placement Score: <b>High</b> = strong availability, <b>Medium</b> = some availability, <b>Low</b> = limited availability, <b>Restricted</b> = SKU not available in this region. Reflects real-time Azure capacity — not a guarantee.</span>
-                </span>
-              </span>
+            <th (click)="sortBy('score')" class="sortable has-tooltip">
+              <span class="th-label">Score<span *ngIf="sortColumn === 'score'" class="sort-caret">{{ sortAsc ? '▲' : '▼' }}</span></span>
+              <span class="th-tooltip" [innerHTML]="'Azure Spot Placement Score: <b>High</b> = strong availability, <b>Medium</b> = some availability, <b>Low</b> = limited availability, <b>Restricted</b> = SKU not available in this region. Reflects real-time Azure capacity — not a guarantee.'"></span>
             </th>
-            <th (click)="sortBy('evictionRate')" class="sortable">
-              <span class="th-content">
-                <span>Eviction Rate
-                  <span *ngIf="sortColumn === 'evictionRate'">{{ sortAsc ? '▲' : '▼' }}</span>
-                </span>
-                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
-                  <span class="tooltip">Historical eviction rate over the last 28 days for Spot VMs of this SKU. Lower is better. <b>0-5%</b> = very stable, <b>20%+</b> = frequent evictions — plan workloads accordingly.</span>
-                </span>
-              </span>
+            <th (click)="sortBy('evictionRate')" class="sortable has-tooltip">
+              <span class="th-label">Eviction Rate<span *ngIf="sortColumn === 'evictionRate'" class="sort-caret">{{ sortAsc ? '▲' : '▼' }}</span></span>
+              <span class="th-tooltip" [innerHTML]="'Historical eviction rate over the last 28 days for Spot VMs of this SKU. Lower is better. <b>0-5%</b> = very stable, <b>20%+</b> = frequent evictions — plan workloads accordingly.'"></span>
             </th>
-            <th>
-              <span class="th-content">
-                <span>Quota</span>
-                <span class="info-icon" tabindex="0">i
-                  <span class="tooltip tooltip-left">Whether your subscription has available <b>VM CPU quota</b> in this region to actually deploy this SKU. Even with a High score, deployment fails if quota is exhausted. Request a quota increase via Azure Portal → Quotas if needed.</span>
-                </span>
-              </span>
+            <th class="has-tooltip th-quota-col">
+              <span class="th-label">Quota</span>
+              <span class="th-tooltip th-tooltip-right">Per-row icon shows whether this SKU has quota in this region. The percentage reflects the regional Spot vCPU pool (<b>lowPriorityCores</b>). Request a quota increase via Azure Portal → Quotas if needed.</span>
             </th>
           </tr>
         </thead>
@@ -256,8 +222,15 @@
               <span class="eviction-badge" [ngClass]="evictionClass(s.evictionRate)">{{ evictionRate(s.evictionRate) }}</span>
             </td>
             <td>
-              <span [class.quota-yes]="s.isQuotaAvailable" [class.quota-no]="!s.isQuotaAvailable">
-                {{ s.isQuotaAvailable ? '✓ Available' : '✗ Unavailable' }}
+              <span [class.quota-yes]="s.isQuotaAvailable" [class.quota-no]="!s.isQuotaAvailable" class="quota-cell">
+                <span class="quota-icon">{{ s.isQuotaAvailable ? '✓' : '✗' }}</span>
+                <ng-container *ngIf="vmQuota; else fallbackQuota">
+                  <span class="quota-pct">{{ vmQuota.percentRemaining }}% free</span>
+                  <span class="quota-detail-sm">({{ vmQuota.limit - vmQuota.currentValue }} / {{ vmQuota.limit }} vCPUs)</span>
+                </ng-container>
+                <ng-template #fallbackQuota>
+                  <span>{{ s.isQuotaAvailable ? 'Available' : 'Unavailable' }}</span>
+                </ng-template>
               </span>
             </td>
           </tr>
