@@ -1,0 +1,239 @@
+<div class="dashboard">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-content">
+      <h1>Spot VM Placement Scores</h1>
+      <span class="header-sub">Real-time availability scores from Azure</span>
+    </div>
+  </header>
+
+  <!-- Loading config -->
+  <div *ngIf="configLoading" class="loading-bar">Loading configuration...</div>
+
+  <!-- Controls -->
+  <section *ngIf="config" class="controls">
+    <div class="control-row">
+      <div class="control-group">
+        <label for="subscription">Subscription</label>
+        <select id="subscription" [(ngModel)]="selectedSubscription">
+          <option value="" disabled>Select subscription</option>
+          <option *ngFor="let sub of config.subscriptions" [value]="sub.id">{{ sub.name }}</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="region">Region</label>
+        <select id="region" [(ngModel)]="selectedRegion">
+          <option value="" disabled>Select region</option>
+          <option *ngFor="let r of config.regions" [value]="r">{{ r }}</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="count">Desired Count</label>
+        <input id="count" type="number" [(ngModel)]="desiredCount" min="1" max="10" style="width: 80px">
+      </div>
+
+      <div class="control-group control-action">
+        <button class="btn-primary btn-fetch" [disabled]="!canFetch" (click)="fetchScores()">
+          <span *ngIf="!loading">Get Scores</span>
+          <span *ngIf="loading" class="spinner"></span>
+          <span *ngIf="loading"> Fetching...</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Category & Series Filters -->
+    <div class="filter-row">
+      <div class="control-group">
+        <label for="category">Category</label>
+        <select id="category" [(ngModel)]="selectedCategory" (ngModelChange)="onCategoryChange()">
+          <option *ngFor="let cat of categories" [value]="cat">{{ cat }}</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="series">Instance Series</label>
+        <select id="series" [(ngModel)]="selectedSeries" (ngModelChange)="onSeriesChange()">
+          <option *ngFor="let s of seriesOptions" [value]="s">{{ s }}</option>
+        </select>
+      </div>
+
+      <div class="control-group sku-count-group">
+        <span class="sku-count">{{ selectedSkus.length }} SKUs selected</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Errors -->
+  <div *ngIf="errors.length > 0 && !loading" class="error-banner">
+    <strong>⚠ {{ errors.length }} batch(es) had errors:</strong>
+    <div *ngFor="let e of errors" class="error-item">
+      Status {{ e.status }}: {{ e.message }}
+    </div>
+  </div>
+
+  <!-- Loading animation -->
+  <div *ngIf="loading" class="loading-overlay">
+    <div class="loading-card">
+      <!-- Radar sweep -->
+      <div class="radar">
+        <div class="radar-ring"></div>
+        <div class="radar-ring ring-2"></div>
+        <div class="radar-ring ring-3"></div>
+        <div class="radar-sweep"></div>
+        <div class="radar-center">{{ retryCountdown > 0 ? '⏸' : '⏳' }}</div>
+        <!-- Blips -->
+        <div class="blip blip-1"></div>
+        <div class="blip blip-2"></div>
+        <div class="blip blip-3"></div>
+        <div class="blip blip-4"></div>
+        <div class="blip blip-5"></div>
+      </div>
+
+      <div class="loading-msg">{{ progressStatus || 'Loading...' }}</div>
+
+      <!-- Real progress bar -->
+      <div class="progress-track">
+        <div class="progress-fill-real" [style.width.%]="progressPercent"></div>
+      </div>
+
+      <div class="loading-meta">
+        <span>{{ scoresReceived }} scores received</span>
+        <span class="meta-dot">&middot;</span>
+        <span>Batch {{ progressBatch }}/{{ progressTotal }}</span>
+        <span class="meta-dot">&middot;</span>
+        <span>{{ progressPercent }}%</span>
+      </div>
+
+      <!-- Retry countdown bar -->
+      <div *ngIf="retryCountdown > 0" class="retry-banner">
+        <span>&#x23F3; Waiting {{ retryCountdown }}s for rate limit cooldown...</span>
+      </div>
+
+      <button class="stop-btn" (click)="stopFetch()">&#x23F9; Stop</button>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <section *ngIf="scores.length > 0" class="results">
+    <!-- Summary tiles -->
+    <div class="summary">
+      <div class="tile">
+        <span class="tile-value">{{ scores.length }}</span>
+        <span class="tile-label">Total</span>
+      </div>
+      <div class="tile tile-high">
+        <span class="tile-value">{{ highCount }}</span>
+        <span class="tile-label">High</span>
+      </div>
+      <div class="tile tile-medium">
+        <span class="tile-value">{{ mediumCount }}</span>
+        <span class="tile-label">Medium</span>
+      </div>
+      <div class="tile tile-low">
+        <span class="tile-value">{{ lowCount }}</span>
+        <span class="tile-label">Low</span>
+      </div>
+      <div class="tile tile-restricted">
+        <span class="tile-value">{{ restrictedCount }}</span>
+        <span class="tile-label">Restricted</span>
+      </div>
+      <div class="tile tile-quota" *ngIf="noQuotaCount > 0">
+        <span class="tile-value">{{ noQuotaCount }}</span>
+        <span class="tile-label">No Quota</span>
+      </div>
+    </div>
+
+    <!-- Timestamp -->
+    <div class="timestamp">
+      Fetched: {{ timestamp | date:'medium' }}
+    </div>
+
+    <!-- Tab bar -->
+    <div class="tabs">
+      <button class="tab" [class.tab-active]="activeTab === 'table'" (click)="activeTab = 'table'">Score Table</button>
+      <button class="tab" [class.tab-active]="activeTab === 'heatmap'" (click)="activeTab = 'heatmap'">Heatmap</button>
+    </div>
+
+    <!-- Table View -->
+    <div *ngIf="activeTab === 'table'" class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th (click)="sortBy('sku')" class="sortable">SKU
+              <span *ngIf="sortColumn === 'sku'">{{ sortAsc ? '▲' : '▼' }}</span>
+            </th>
+            <th (click)="sortBy('region')" class="sortable">Region
+              <span *ngIf="sortColumn === 'region'">{{ sortAsc ? '▲' : '▼' }}</span>
+            </th>
+            <th (click)="sortBy('availabilityZone')" class="sortable">Zone
+              <span *ngIf="sortColumn === 'availabilityZone'">{{ sortAsc ? '▲' : '▼' }}</span>
+            </th>
+            <th (click)="sortBy('score')" class="sortable">Score
+              <span *ngIf="sortColumn === 'score'">{{ sortAsc ? '▲' : '▼' }}</span>
+            </th>
+            <th (click)="sortBy('evictionRate')" class="sortable">Eviction Rate
+              <span *ngIf="sortColumn === 'evictionRate'">{{ sortAsc ? '▲' : '▼' }}</span>
+            </th>
+            <th>Quota</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let s of sortedScores">
+            <td class="mono">{{ s.sku }}</td>
+            <td>{{ s.region }}</td>
+            <td>{{ s.availabilityZone || 'N/A' }}</td>
+            <td>
+              <span class="score-badge" [ngClass]="scoreClass(s.score)">{{ s.score }}</span>
+            </td>
+            <td>
+              <span class="eviction-badge" [ngClass]="evictionClass(s.evictionRate)">{{ evictionRate(s.evictionRate) }}</span>
+            </td>
+            <td>
+              <span [class.quota-yes]="s.isQuotaAvailable" [class.quota-no]="!s.isQuotaAvailable">
+                {{ s.isQuotaAvailable ? '✓ Available' : '✗ Unavailable' }}
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Heatmap View -->
+    <div *ngIf="activeTab === 'heatmap'" class="heatmap-container">
+      <div class="heatmap-legend">
+        <span class="legend-item"><span class="legend-dot score-high"></span> High (3)</span>
+        <span class="legend-item"><span class="legend-dot score-medium"></span> Medium (2)</span>
+        <span class="legend-item"><span class="legend-dot score-low"></span> Low (1)</span>
+        <span class="legend-item"><span class="legend-dot score-restricted"></span> Restricted (0)</span>
+      </div>
+      <div class="heatmap-scroll">
+        <table class="heatmap-table">
+          <thead>
+            <tr>
+              <th class="sticky-col">SKU</th>
+              <th *ngFor="let zone of heatmapZones">Zone {{ zone }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let sku of heatmapSkus">
+              <td class="sticky-col mono">{{ sku }}</td>
+              <td *ngFor="let zone of heatmapZones"
+                  class="heatmap-cell"
+                  [ngClass]="getHeatmapScore(sku, zone) ? scoreClass(getHeatmapScore(sku, zone)!.score) : 'score-empty'"
+                  [title]="(getHeatmapScore(sku, zone)?.score || 'No data') + ' — Eviction: ' + evictionRate(getHeatmapScore(sku, zone)?.evictionRate || '')">
+                {{ getHeatmapScore(sku, zone) ? scoreNumeric(getHeatmapScore(sku, zone)!.score) : '-' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Empty state -->
+  <div *ngIf="!loading && scores.length === 0 && !configLoading" class="empty-state">
+    <p>Select a subscription, region, and VM families, then click <strong>Get Scores</strong>.</p>
+  </div>
+</div>

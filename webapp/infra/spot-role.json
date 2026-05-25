@@ -1,0 +1,13 @@
+{
+  "AssignableScopes": [
+    "/subscriptions/616dc9b8-b4aa-415f-8dcb-71bc462916c5"
+  ],
+  "Name": "Spot Placement Score Reader",
+  "Description": "Can generate Spot VM Placement Scores",
+  "NotActions": [],
+  "DataActions": [],
+  "Actions": [
+    "Microsoft.Compute/locations/placementScores/generate/action"
+  ],
+  "NotDataActions": []
+}
