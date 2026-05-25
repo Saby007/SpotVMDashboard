@@ -86,27 +86,6 @@
         <div class="quota-bar-fill" [style.width.%]="quotaInfo.percentRemaining"></div>
       </div>
     </div>
-
-    <!-- Regional Spot vCPU pool (lowPriorityCores) -->
-    <div *ngIf="vmQuota" class="quota-row vm-quota-row" [ngClass]="vmQuotaClass()">
-      <div class="quota-header">
-        <span class="quota-label">
-          Regional Spot vCPU Pool — {{ vmQuota.region }}
-          <span class="info-icon" tabindex="0">i
-            <span class="tooltip tooltip-bottom">
-              Live <b>lowPriorityCores</b> usage from <code>Microsoft.Compute/locations/{{ vmQuota.region }}/usages</code>. Shows how much of your subscription's regional Spot vCPU pool is currently consumed across all Spot VMs in this region. Snapshot is taken at the start of each “Get Scores” run.
-            </span>
-          </span>
-        </span>
-        <span class="quota-value">
-          <strong>{{ vmQuota.percentRemaining }}%</strong>
-          <span class="quota-detail">({{ vmQuota.currentValue }} / {{ vmQuota.limit }} vCPUs used)</span>
-        </span>
-      </div>
-      <div class="quota-bar-track">
-        <div class="quota-bar-fill" [style.width.%]="vmQuota.percentRemaining"></div>
-      </div>
-    </div>
   </section>
 
   <!-- Errors -->
@@ -227,7 +206,7 @@
             </th>
             <th class="has-tooltip th-quota-col">
               <span class="th-label">Quota</span>
-              <span class="th-tooltip th-tooltip-right">Per-SKU-family Spot quota signal from the Placement Score API. <b>✓ Available</b> = your subscription has quota allocated for this SKU family in this region. The aggregate <b>regional Spot vCPU pool</b> (lowPriorityCores) is shown separately in the top bar.</span>
+              <span class="th-tooltip th-tooltip-right">Spot quota signal for this SKU family in this region. <b>✓ nn%</b> = quota allocated and shows remaining capacity from the regional Spot vCPU pool (lowPriorityCores). <b>✗ Unavailable (0%)</b> = no quota for this family. Request a quota increase via Azure Portal → Quotas.</span>
             </th>
           </tr>
         </thead>
@@ -244,7 +223,11 @@
             </td>
             <td>
               <span [class.quota-yes]="s.isQuotaAvailable" [class.quota-no]="!s.isQuotaAvailable">
-                {{ s.isQuotaAvailable ? '✓ Available' : '✗ Unavailable' }}
+                <ng-container *ngIf="s.isQuotaAvailable; else unavailable">
+                  ✓ <ng-container *ngIf="vmQuota; else availableNoPct">{{ vmQuota.percentRemaining }}%</ng-container>
+                  <ng-template #availableNoPct>Available</ng-template>
+                </ng-container>
+                <ng-template #unavailable>✗ Unavailable (0%)</ng-template>
               </span>
             </td>
           </tr>
