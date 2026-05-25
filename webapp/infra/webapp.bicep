@@ -64,6 +64,17 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
           value: 'true'
         }
+        // Subscription the web app is deployed into — the backend reads these at startup
+        // to build its allowed-subscription list. Override or add AZURE_SUBSCRIPTIONS
+        // (JSON array) for multi-subscription dashboards.
+        {
+          name: 'AZURE_SUBSCRIPTION_ID'
+          value: subscription().subscriptionId
+        }
+        {
+          name: 'AZURE_SUBSCRIPTION_NAME'
+          value: subscription().displayName
+        }
       ]
     }
   }

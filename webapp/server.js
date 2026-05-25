@@ -10,10 +10,35 @@ app.use(express.static(path.join(__dirname, 'dist/spotvm-dashboard/browser')));
 
 // --- Configuration ---
 
+// Build the allowed-subscription list at startup.
+// Priority:
+//   1. AZURE_SUBSCRIPTIONS  — JSON array, e.g. '[{"id":"...","name":"Prod"}]' (multi-sub)
+//   2. AZURE_SUBSCRIPTION_ID (+ optional AZURE_SUBSCRIPTION_NAME) — single sub
+// Bicep injects AZURE_SUBSCRIPTION_ID/NAME with the subscription the web app is deployed into,
+// so by default the dashboard queries its own hosting subscription. No code change needed to
+// retarget — redeploy into a different subscription, or override the app settings in the portal.
+function loadSubscriptions() {
+  if (process.env.AZURE_SUBSCRIPTIONS) {
+    try {
+      const list = JSON.parse(process.env.AZURE_SUBSCRIPTIONS);
+      if (Array.isArray(list) && list.length > 0) return list;
+      console.warn('AZURE_SUBSCRIPTIONS env var is empty or not an array, ignoring');
+    } catch (e) {
+      console.warn('AZURE_SUBSCRIPTIONS env var is not valid JSON, ignoring:', e.message);
+    }
+  }
+  if (process.env.AZURE_SUBSCRIPTION_ID) {
+    return [{
+      id: process.env.AZURE_SUBSCRIPTION_ID,
+      name: process.env.AZURE_SUBSCRIPTION_NAME || process.env.AZURE_SUBSCRIPTION_ID
+    }];
+  }
+  console.warn('No AZURE_SUBSCRIPTION_ID or AZURE_SUBSCRIPTIONS env var found — subscription list is empty. Set one of these in App Service configuration (or your shell for local dev).');
+  return [];
+}
+
 const CONFIG = {
-  subscriptions: [
-    { id: '616dc9b8-b4aa-415f-8dcb-71bc462916c5', name: 'SfMC-Internal' }
-  ],
+  subscriptions: loadSubscriptions(),
   regions: [
     'centralindia', 'southindia', 'westindia',
     'eastus', 'eastus2', 'westus', 'westus2', 'westus3',

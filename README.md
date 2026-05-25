@@ -79,7 +79,8 @@ Save the outputs — you'll need `webAppPrincipalId` for the next step.
 The Spot Placement Score API requires `Microsoft.Compute/locations/placementScores/generate/action`, which isn't in any built-in role.
 
 ```powershell
-$SUB_ID = "<target-subscription-id>"
+# Use the subscription you're currently logged into (same one the web app will be deployed in by default)
+$SUB_ID = az account show --query id -o tsv
 
 @{
   Name = "Spot Placement Score Reader"
@@ -94,7 +95,7 @@ $SUB_ID = "<target-subscription-id>"
 az role definition create --role-definition spot-role.json
 ```
 
-> Only needed **once per subscription**.
+> Only needed **once per subscription**. To make the role assignable across many subs at once, set `AssignableScopes` to a management-group scope instead.
 
 ### Step 3: Assign Roles to Web App Managed Identity
 
@@ -194,11 +195,22 @@ Start-Process "https://spotvm-hdfc-webapp.azurewebsites.net"
 
 ## Adding More Subscriptions
 
-For subscriptions **in the same tenant**:
+By default the dashboard queries **the subscription it is deployed in** — the Bicep template injects `AZURE_SUBSCRIPTION_ID` and `AZURE_SUBSCRIPTION_NAME` as App Service settings using the `subscription()` function, and `server.js` reads them at startup.
 
-1. Assign both roles (Reader + Spot Placement Score Reader) to the webapp MI on the new subscription (repeat Step 3)
-2. Add the subscription to `server.js` → `CONFIG.subscriptions` array
-3. Redeploy
+To query **additional** subscriptions (same tenant):
+
+1. Grant both roles (Reader + Spot Placement Score Reader) to the webapp MI on each new subscription (repeat Step 3).
+2. Override the subscription list via an App Service setting — set **`AZURE_SUBSCRIPTIONS`** to a JSON array (this takes precedence over `AZURE_SUBSCRIPTION_ID`):
+
+   ```powershell
+   $subsJson = '[{"id":"<sub-id-1>","name":"Prod"},{"id":"<sub-id-2>","name":"Dev"}]'
+   az webapp config appsettings set `
+     --resource-group $RG `
+     --name spotvm-hdfc-webapp `
+     --settings "AZURE_SUBSCRIPTIONS=$subsJson"
+   ```
+
+3. The app restarts automatically and the dropdown picks up the new list — **no code change or redeploy required**.
 
 For subscriptions **in a different tenant**, use [Azure Lighthouse](https://learn.microsoft.com/en-us/azure/lighthouse/overview) to delegate access to your tenant's MI.
 
@@ -208,7 +220,7 @@ Edit `server.js` → `CONFIG` object to modify:
 
 | Setting | Description |
 |---------|-------------|
-| `subscriptions` | Allowed subscription list (id + name) |
+| `subscriptions` | Loaded at startup from `AZURE_SUBSCRIPTIONS` (JSON array) **or** `AZURE_SUBSCRIPTION_ID` (+ `AZURE_SUBSCRIPTION_NAME`) env vars — not hardcoded. Bicep injects the deploy subscription automatically. |
 | `regions` | Azure regions to query |
 | `skuFamilies` | Static fallback SKU families (used only if Azure Resource SKUs API is unavailable) |
 | `batchSize` | SKUs per API call (max 5) |
@@ -220,6 +232,10 @@ Edit `server.js` → `CONFIG` object to modify:
 ```powershell
 cd webapp
 npm install
+
+# Tell the backend which subscription to query (same value you use for $SUB_ID above)
+$env:AZURE_SUBSCRIPTION_ID = az account show --query id -o tsv
+$env:AZURE_SUBSCRIPTION_NAME = az account show --query name -o tsv
 
 # Terminal 1: Backend (port 8080)
 node server.js
