@@ -33,8 +33,18 @@ export interface ScoreResponse {
 }
 
 export interface DashboardConfig {
-  subscriptions: { id: string; name: string }[];
   regions: string[];
   skuFamilies: Record<string, string[]>;
   defaultDesiredCount: number;
+}
+
+export interface Subscription {
+  id: string;
+  name: string;
+}
+
+export interface UserInfo {
+  oid: string;
+  name: string;
+  upn: string;
 }

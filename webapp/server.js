@@ -1,5 +1,6 @@
 const express = require('express');
 const { DefaultAzureCredential } = require('@azure/identity');
+const { createRemoteJWKSet, jwtVerify } = require('jose');
 const path = require('path');
 
 const app = express();
@@ -8,37 +9,101 @@ app.use(express.json());
 // Serve Angular build output
 app.use(express.static(path.join(__dirname, 'dist/spotvm-dashboard/browser')));
 
-// --- Configuration ---
+// --- Entra ID auth configuration ---
+const TENANT_ID = process.env.ENTRA_TENANT_ID;
+const APP_CLIENT_ID = process.env.ENTRA_APP_CLIENT_ID;
+if (!TENANT_ID || !APP_CLIENT_ID) {
+  console.warn('ENTRA_TENANT_ID / ENTRA_APP_CLIENT_ID not set — /api/* will reject all requests until configured.');
+}
+const JWKS = TENANT_ID
+  ? createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${TENANT_ID}/discovery/v2.0/keys`))
+  : null;
+const EXPECTED_ISSUER = TENANT_ID ? `https://login.microsoftonline.com/${TENANT_ID}/v2.0` : null;
+const EXPECTED_AUDIENCE = APP_CLIENT_ID ? `api://${APP_CLIENT_ID}` : null;
 
-// Build the allowed-subscription list at startup.
-// Priority:
-//   1. AZURE_SUBSCRIPTIONS  — JSON array, e.g. '[{"id":"...","name":"Prod"}]' (multi-sub)
-//   2. AZURE_SUBSCRIPTION_ID (+ optional AZURE_SUBSCRIPTION_NAME) — single sub
-// Bicep injects AZURE_SUBSCRIPTION_ID/NAME with the subscription the web app is deployed into,
-// so by default the dashboard queries its own hosting subscription. No code change needed to
-// retarget — redeploy into a different subscription, or override the app settings in the portal.
-function loadSubscriptions() {
-  if (process.env.AZURE_SUBSCRIPTIONS) {
-    try {
-      const list = JSON.parse(process.env.AZURE_SUBSCRIPTIONS);
-      if (Array.isArray(list) && list.length > 0) return list;
-      console.warn('AZURE_SUBSCRIPTIONS env var is empty or not an array, ignoring');
-    } catch (e) {
-      console.warn('AZURE_SUBSCRIPTIONS env var is not valid JSON, ignoring:', e.message);
-    }
+// Bearer-token middleware. On success attaches { oid, name, upn, assertion } to req.user.
+async function requireAuth(req, res, next) {
+  if (!JWKS) {
+    return res.status(503).json({ error: 'Server auth not configured (missing ENTRA_TENANT_ID / ENTRA_APP_CLIENT_ID).' });
   }
-  if (process.env.AZURE_SUBSCRIPTION_ID) {
-    return [{
-      id: process.env.AZURE_SUBSCRIPTION_ID,
-      name: process.env.AZURE_SUBSCRIPTION_NAME || process.env.AZURE_SUBSCRIPTION_ID
-    }];
+  const authz = req.headers.authorization || '';
+  if (!authz.toLowerCase().startsWith('bearer ')) {
+    return res.status(401).json({ error: 'Missing Bearer token' });
   }
-  console.warn('No AZURE_SUBSCRIPTION_ID or AZURE_SUBSCRIPTIONS env var found — subscription list is empty. Set one of these in App Service configuration (or your shell for local dev).');
-  return [];
+  const token = authz.slice(7).trim();
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: EXPECTED_ISSUER,
+      audience: EXPECTED_AUDIENCE
+    });
+    req.user = {
+      oid: payload.oid,
+      name: payload.name,
+      upn: payload.preferred_username || payload.upn || payload.email,
+      assertion: token
+    };
+    next();
+  } catch (err) {
+    console.warn('JWT validation failed:', err.message);
+    return res.status(401).json({ error: 'Invalid token: ' + err.message });
+  }
 }
 
+// --- On-Behalf-Of token exchange (MI federated credential -> ARM token as user) ---
+// Cache: oid -> { token, expiresAt }
+const oboTokenCache = new Map();
+const OBO_REFRESH_SKEW_MS = 5 * 60 * 1000; // refresh 5 min before expiry
+
+async function getMiClientAssertion() {
+  // Use the web app's system-assigned MI to mint a token for api://AzureADTokenExchange.
+  // The app registration trusts this MI via a federated identity credential.
+  const cred = getCredential();
+  const tok = await cred.getToken('api://AzureADTokenExchange');
+  if (!tok || !tok.token) throw new Error('Failed to acquire MI assertion');
+  return tok.token;
+}
+
+async function getArmTokenForUser(req) {
+  const oid = req.user && req.user.oid;
+  if (!oid) throw new Error('No oid on request');
+  const cached = oboTokenCache.get(oid);
+  if (cached && cached.expiresAt - Date.now() > OBO_REFRESH_SKEW_MS) {
+    return cached.token;
+  }
+  const clientAssertion = await getMiClientAssertion();
+  const body = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    client_id: APP_CLIENT_ID,
+    client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+    client_assertion: clientAssertion,
+    assertion: req.user.assertion,
+    scope: 'https://management.azure.com/.default',
+    requested_token_use: 'on_behalf_of'
+  });
+  const resp = await fetch(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    const err = new Error(`OBO token exchange failed: HTTP ${resp.status}: ${text}`);
+    err.status = resp.status;
+    err.body = text;
+    throw err;
+  }
+  const data = await resp.json();
+  const expiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+  oboTokenCache.set(oid, { token: data.access_token, expiresAt });
+  return data.access_token;
+}
+
+// --- Configuration ---
+// Subscriptions are no longer configured here — they are enumerated per signed-in user
+// via the ARM /subscriptions endpoint using the user's OBO token. Azure RBAC on the
+// subscription is the source of truth for what each user can see and query.
+
 const CONFIG = {
-  subscriptions: loadSubscriptions(),
   regions: [
     'centralindia', 'southindia', 'westindia',
     'eastus', 'eastus2', 'westus', 'westus2', 'westus3',
@@ -293,23 +358,23 @@ function parseFamilyCode(familyCode) {
 }
 
 let skuFetchPromise = null;
+let skuCatalogCache = null;
 
-async function fetchAndCategorizeSkus() {
+async function fetchAndCategorizeSkus(armToken, subId) {
+  if (skuCatalogCache) return skuCatalogCache;
   if (skuFetchPromise) return skuFetchPromise;
+  if (!armToken || !subId) return CONFIG.skuFamilies; // fallback if called without auth context
 
   skuFetchPromise = (async () => {
     try {
       console.log('Fetching VM SKUs from Azure Resource SKUs API...');
-      const cred = getCredential();
-      const tokenResponse = await cred.getToken('https://management.azure.com/.default');
-      const subId = CONFIG.subscriptions[0].id;
 
       const allSkus = [];
       let url = `https://management.azure.com/subscriptions/${encodeURIComponent(subId)}/providers/Microsoft.Compute/skus?api-version=2021-07-01&$filter=resourceType%20eq%20%27virtualMachines%27`;
 
       while (url) {
         const resp = await fetch(url, {
-          headers: { 'Authorization': `Bearer ${tokenResponse.token}` }
+          headers: { 'Authorization': `Bearer ${armToken}` }
         });
         if (!resp.ok) throw new Error(`Resource SKUs API ${resp.status}: ${await resp.text()}`);
         const data = await resp.json();
@@ -353,6 +418,7 @@ async function fetchAndCategorizeSkus() {
       const total = Object.values(sorted).reduce((n, a) => n + a.length, 0);
       console.log(`Organized ${total} Spot-capable SKUs into ${Object.keys(sorted).length} series`);
 
+      skuCatalogCache = sorted;
       return sorted;
     } catch (err) {
       console.error('SKU fetch failed, using static fallback:', err.message);
@@ -401,43 +467,78 @@ async function fetchEvictionRates(token, skus, region) {
   return evictionMap;
 }
 
-// GET /api/config — returns regions, SKU families, subscriptions for the UI dropdowns
-app.get('/api/config', async (_req, res) => {
-  const skuFamilies = await fetchAndCategorizeSkus();
+// GET /api/me — returns the signed-in user (used by Angular to show name/initials).
+app.get('/api/me', requireAuth, (req, res) => {
+  res.json({ oid: req.user.oid, name: req.user.name, upn: req.user.upn });
+});
+
+// GET /api/subscriptions — returns subscriptions the signed-in user has RBAC access to.
+app.get('/api/subscriptions', requireAuth, async (req, res) => {
+  try {
+    const armToken = await getArmTokenForUser(req);
+    const resp = await fetch('https://management.azure.com/subscriptions?api-version=2022-12-01', {
+      headers: { 'Authorization': `Bearer ${armToken}` }
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      return res.status(resp.status).json({ error: `ARM /subscriptions failed: ${text}` });
+    }
+    const data = await resp.json();
+    const subs = (data.value || [])
+      .filter(s => s.state === 'Enabled' || s.state === 'PastDue' || !s.state)
+      .map(s => ({ id: s.subscriptionId, name: s.displayName }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    res.json(subs);
+  } catch (err) {
+    console.error('Subscriptions lookup failed:', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// GET /api/config — returns regions + SKU families (subscriptions now come from /api/subscriptions).
+app.get('/api/config', requireAuth, async (req, res) => {
+  let skuFamilies = CONFIG.skuFamilies;
+  try {
+    const armToken = await getArmTokenForUser(req);
+    // Need *some* subscription to query the SKUs catalog — grab the first the user can see.
+    const subResp = await fetch('https://management.azure.com/subscriptions?api-version=2022-12-01', {
+      headers: { 'Authorization': `Bearer ${armToken}` }
+    });
+    if (subResp.ok) {
+      const subData = await subResp.json();
+      const firstSub = (subData.value || []).find(s => s.subscriptionId);
+      if (firstSub) {
+        skuFamilies = await fetchAndCategorizeSkus(armToken, firstSub.subscriptionId);
+      }
+    }
+  } catch (err) {
+    console.warn('Config SKU fetch fell back to static:', err.message);
+  }
   res.json({
-    subscriptions: CONFIG.subscriptions,
     regions: CONFIG.regions,
     skuFamilies,
     defaultDesiredCount: CONFIG.defaultDesiredCount
   });
 });
 
-// GET /api/quota — returns current Spot API quota usage for a subscription
-app.get('/api/quota', (req, res) => {
+// GET /api/quota — legacy local Spot API quota tracker (still exposed but no longer auto-polled by UI).
+app.get('/api/quota', requireAuth, (req, res) => {
   const subscriptionId = req.query.subscriptionId;
   if (!subscriptionId) {
     return res.status(400).json({ error: 'subscriptionId query parameter is required' });
-  }
-  if (!CONFIG.subscriptions.find(s => s.id === subscriptionId)) {
-    return res.status(403).json({ error: 'Subscription not in allowed list' });
   }
   res.json({ apiName: 'Spot Placement Score API', ...getQuotaSnapshot(subscriptionId) });
 });
 
 // POST /api/scores — fetches Spot Placement Scores for given parameters
 // Body: { subscriptionId, region, skus: string[], desiredCount?: number }
-// Streams NDJSON progress events back to the client
-app.post('/api/scores', async (req, res) => {
+// Streams NDJSON progress events back to the client. Azure RBAC on the subscription
+// (enforced via the user's OBO token) is the source of truth for what the user can query.
+app.post('/api/scores', requireAuth, async (req, res) => {
   const { subscriptionId, region, skus, desiredCount } = req.body;
 
   if (!subscriptionId || !region || !Array.isArray(skus) || skus.length === 0) {
     return res.status(400).json({ error: 'subscriptionId, region, and skus[] are required' });
-  }
-
-  // Validate subscriptionId is in allowed list
-  const allowedSub = CONFIG.subscriptions.find(s => s.id === subscriptionId);
-  if (!allowedSub) {
-    return res.status(403).json({ error: 'Subscription not in allowed list' });
   }
 
   // Validate region is in allowed list
@@ -457,8 +558,7 @@ app.post('/api/scores', async (req, res) => {
   };
 
   try {
-    const cred = getCredential();
-    const tokenResponse = await cred.getToken('https://management.azure.com/.default');
+    const armToken = await getArmTokenForUser(req);
 
     const count = Math.min(Math.max(desiredCount || CONFIG.defaultDesiredCount, 1), 10);
     const totalBatches = Math.ceil(skus.length / CONFIG.batchSize);
@@ -467,14 +567,14 @@ app.post('/api/scores', async (req, res) => {
     const BASE_DELAY_MS = 30000;
 
     // Fetch real eviction rates from Resource Graph in parallel with scoring
-    const evictionMap = await fetchEvictionRates(tokenResponse.token, skus, region);
+    const evictionMap = await fetchEvictionRates(armToken, skus, region);
 
     send({ type: 'start', totalBatches, totalSkus: skus.length });
     // Emit initial quota snapshot so the UI shows current usage even before the first batch
     send({ type: 'quota', apiName: 'Spot Placement Score API', ...getQuotaSnapshot(subscriptionId) });
 
     // Look up regional Spot vCPU pool quota (best-effort; won't block scoring if it fails)
-    const vmQuota = await fetchSpotVmQuota(tokenResponse.token, subscriptionId, region);
+    const vmQuota = await fetchSpotVmQuota(armToken, subscriptionId, region);
     if (vmQuota) {
       send({ type: 'vmQuota', ...vmQuota });
     }
@@ -501,7 +601,7 @@ app.post('/api/scores', async (req, res) => {
         const response = await fetch(url, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${tokenResponse.token}`,
+            'Authorization': `Bearer ${armToken}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify(payload)
@@ -577,6 +677,5 @@ app.get(/^\/(?!api\/).*/, (_req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`Spot VM Dashboard server running on port ${PORT}`);
-  // Pre-fetch SKU catalog in background
-  fetchAndCategorizeSkus().catch(err => console.error('Background SKU fetch failed:', err.message));
+  // SKU catalog is now fetched on-demand using the first authenticated user's OBO token.
 });

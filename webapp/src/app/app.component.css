@@ -9,10 +9,15 @@
 /* === Header === */
 
 .header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
   padding: 1.5rem 0 1rem;
   border-bottom: 1px solid var(--border);
   margin-bottom: 1.5rem;
 }
+.header-content { min-width: 0; }
 .header h1 {
   font-size: 1.5rem;
   font-weight: 700;
@@ -21,6 +26,64 @@
 .header-sub {
   font-size: 0.85rem;
   color: var(--text-secondary);
+}
+.header-auth {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+.user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.6rem 0.25rem 0.25rem;
+  background: var(--bg-secondary, #1c1f26);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+.user-initials {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--accent, #2b6cb0);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.user-name { color: var(--text-primary, #fff); }
+.btn-link {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary, #aaa);
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+.btn-link:hover { color: var(--text-primary, #fff); border-color: var(--border); }
+
+/* === Auth gate === */
+.auth-gate {
+  max-width: 480px;
+  margin: 4rem auto;
+  text-align: center;
+  padding: 2rem;
+  background: var(--bg-secondary, #1c1f26);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.auth-gate h2 { margin-bottom: 0.75rem; font-size: 1.25rem; }
+.auth-gate p { color: var(--text-secondary); margin-bottom: 1.5rem; line-height: 1.5; }
+.hint-error {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--danger, #e06c75);
 }
 
 /* === Loading === */

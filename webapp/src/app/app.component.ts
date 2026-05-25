@@ -1,8 +1,12 @@
-import { Component, OnInit, OnDestroy, NgZone } from '@angular/core';
+import { Component, OnInit, OnDestroy, NgZone, Inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Subject, filter, takeUntil } from 'rxjs';
+import { MsalService, MsalBroadcastService, MSAL_GUARD_CONFIG, MsalGuardConfiguration } from '@azure/msal-angular';
+import { AuthenticationResult, EventMessage, EventType, InteractionStatus, RedirectRequest } from '@azure/msal-browser';
 import { SpotScoreService, StreamEvent } from './services/spot-score.service';
-import { DashboardConfig, QuotaInfo, SpotScore, VmQuotaInfo } from './models/spot-score.model';
+import { DashboardConfig, QuotaInfo, SpotScore, Subscription, UserInfo, VmQuotaInfo } from './models/spot-score.model';
+import { API_SCOPE } from './auth.config';
 
 @Component({
   selector: 'app-root',
@@ -13,6 +17,11 @@ import { DashboardConfig, QuotaInfo, SpotScore, VmQuotaInfo } from './models/spo
 })
 export class AppComponent implements OnInit, OnDestroy {
   config: DashboardConfig | null = null;
+  subscriptions: Subscription[] = [];
+  user: UserInfo | null = null;
+  isAuthenticated = false;
+  authReady = false; // becomes true once MSAL has resolved any pending redirect
+  private destroy$ = new Subject<void>();
 
   // Form state
   selectedSubscription = '';
@@ -63,19 +72,97 @@ export class AppComponent implements OnInit, OnDestroy {
   retryCountdown = 0;
   scoresReceived = 0;
 
-  constructor(private spotService: SpotScoreService, private zone: NgZone) {}
+  constructor(
+    private spotService: SpotScoreService,
+    private zone: NgZone,
+    private msal: MsalService,
+    private msalBroadcast: MsalBroadcastService,
+    @Inject(MSAL_GUARD_CONFIG) private msalGuardConfig: MsalGuardConfiguration
+  ) {}
 
   protected Math = Math;
 
   ngOnInit(): void {
+    // Handle the auth-code redirect (if MSAL is returning from Entra)
+    this.msal.handleRedirectObservable().subscribe({
+      next: (result: AuthenticationResult | null) => {
+        if (result && result.account) {
+          this.msal.instance.setActiveAccount(result.account);
+        }
+        this.checkAuthAndBootstrap();
+      },
+      error: (err) => {
+        console.error('MSAL redirect handling failed', err);
+        this.authReady = true;
+        this.configLoading = false;
+      }
+    });
+
+    // React when MSAL becomes idle (no in-flight interactions)
+    this.msalBroadcast.inProgress$
+      .pipe(filter(status => status === InteractionStatus.None), takeUntil(this.destroy$))
+      .subscribe(() => this.checkAuthAndBootstrap());
+
+    // Login success event — ensure active account + reload data
+    this.msalBroadcast.msalSubject$
+      .pipe(
+        filter((m: EventMessage) => m.eventType === EventType.LOGIN_SUCCESS || m.eventType === EventType.ACQUIRE_TOKEN_SUCCESS),
+        takeUntil(this.destroy$)
+      )
+      .subscribe((m: EventMessage) => {
+        const payload = m.payload as AuthenticationResult;
+        if (payload && payload.account) {
+          this.msal.instance.setActiveAccount(payload.account);
+          this.checkAuthAndBootstrap();
+        }
+      });
+  }
+
+  private checkAuthAndBootstrap(): void {
+    const accounts = this.msal.instance.getAllAccounts();
+    const wasAuth = this.isAuthenticated;
+    this.isAuthenticated = accounts.length > 0;
+    if (this.isAuthenticated && !this.msal.instance.getActiveAccount()) {
+      this.msal.instance.setActiveAccount(accounts[0]);
+    }
+    this.authReady = true;
+
+    if (this.isAuthenticated && !wasAuth) {
+      this.loadUserAndData();
+    } else if (!this.isAuthenticated) {
+      this.configLoading = false;
+    }
+  }
+
+  login(): void {
+    const request: RedirectRequest = {
+      ...(this.msalGuardConfig.authRequest as RedirectRequest),
+      scopes: [API_SCOPE]
+    };
+    this.msal.loginRedirect(request);
+  }
+
+  logout(): void {
+    this.msal.logoutRedirect();
+  }
+
+  private loadUserAndData(): void {
+    this.spotService.getMe().subscribe({
+      next: (u) => this.zone.run(() => { this.user = u; }),
+      error: (err) => console.warn('Failed to load /api/me', err)
+    });
+    this.spotService.getSubscriptions().subscribe({
+      next: (subs) => this.zone.run(() => {
+        this.subscriptions = subs;
+        if (subs.length === 1) this.selectedSubscription = subs[0].id;
+      }),
+      error: (err) => console.error('Failed to load /api/subscriptions', err)
+    });
     this.spotService.getConfig().subscribe({
-      next: (cfg) => {
+      next: (cfg) => this.zone.run(() => {
         this.config = cfg;
         this.familyKeys = Object.keys(cfg.skuFamilies);
         this.desiredCount = cfg.defaultDesiredCount;
-        if (cfg.subscriptions.length === 1) {
-          this.selectedSubscription = cfg.subscriptions[0].id;
-        }
         // Default to centralindia if available
         if (cfg.regions.includes('centralindia')) {
           this.selectedRegion = 'centralindia';
@@ -91,11 +178,11 @@ export class AppComponent implements OnInit, OnDestroy {
           this.selectedFamilies = [...this.filteredFamilyKeys];
         }
         this.configLoading = false;
-      },
-      error: (err) => {
+      }),
+      error: (err) => this.zone.run(() => {
         console.error('Failed to load config', err);
         this.configLoading = false;
-      }
+      })
     });
   }
 
@@ -295,6 +382,8 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.stopFetch();
     this.stopQuotaAutoRefresh();
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 
   // --- API quota helpers ---

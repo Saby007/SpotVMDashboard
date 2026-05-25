@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { DashboardConfig, QuotaInfo } from '../models/spot-score.model';
+import { DashboardConfig, QuotaInfo, Subscription, UserInfo } from '../models/spot-score.model';
 
 export interface StreamEvent {
   type: 'start' | 'batch' | 'scores' | 'retry' | 'error' | 'done' | 'fatal' | 'quota' | 'vmQuota';
@@ -40,6 +40,14 @@ export class SpotScoreService {
 
   getConfig(): Observable<DashboardConfig> {
     return this.http.get<DashboardConfig>('/api/config');
+  }
+
+  getSubscriptions(): Observable<Subscription[]> {
+    return this.http.get<Subscription[]>('/api/subscriptions');
+  }
+
+  getMe(): Observable<UserInfo> {
+    return this.http.get<UserInfo>('/api/me');
   }
 
   getQuota(subscriptionId: string): Observable<QuotaInfo> {
