@@ -81,6 +81,7 @@ The Spot Placement Score API requires `Microsoft.Compute/locations/placementScor
 ```powershell
 # Use the subscription you're currently logged into (same one the web app will be deployed in by default)
 $SUB_ID = az account show --query id -o tsv
+$rolePath = "$env:TEMP\spot-role.json"
 
 @{
   Name = "Spot Placement Score Reader"
@@ -90,9 +91,9 @@ $SUB_ID = az account show --query id -o tsv
   DataActions = @()
   NotDataActions = @()
   AssignableScopes = @("/subscriptions/$SUB_ID")
-} | ConvertTo-Json -Depth 5 | Out-File spot-role.json -Encoding utf8
+} | ConvertTo-Json -Depth 5 | Out-File $rolePath -Encoding utf8
 
-az role definition create --role-definition spot-role.json
+az role definition create --role-definition $rolePath
 ```
 
 > Only needed **once per subscription**. To make the role assignable across many subs at once, set `AssignableScopes` to a management-group scope instead.
