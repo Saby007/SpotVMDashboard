@@ -177,8 +177,40 @@ const CONFIG = {
   },
   apiVersion: '2025-06-05',
   batchSize: 5,
-  defaultDesiredCount: 5
+  defaultDesiredCount: 5,
+  // Spot Placement Score API has an undocumented per-subscription hourly cap (~100 calls).
+  // We track calls locally and surface usage as a % to the UI so users can self-throttle.
+  // Override via env var if Microsoft raises/lowers the limit, or to be more conservative.
+  spotApiHourlyQuota: parseInt(process.env.SPOT_API_HOURLY_QUOTA || '100', 10)
 };
+
+// --- API quota tracker (in-memory, per subscription, rolling 1-hour window) ---
+// Map<subscriptionId, { count: number, windowStartMs: number }>
+const apiQuotaTracker = new Map();
+const QUOTA_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+function getQuotaSnapshot(subscriptionId) {
+  const now = Date.now();
+  let entry = apiQuotaTracker.get(subscriptionId);
+  if (!entry || (now - entry.windowStartMs) >= QUOTA_WINDOW_MS) {
+    entry = { count: 0, windowStartMs: now };
+    apiQuotaTracker.set(subscriptionId, entry);
+  }
+  const used = entry.count;
+  const max = CONFIG.spotApiHourlyQuota;
+  const remaining = Math.max(0, max - used);
+  const percentRemaining = Math.max(0, Math.min(100, Math.round((remaining / max) * 100)));
+  const resetsInSec = Math.max(0, Math.ceil((entry.windowStartMs + QUOTA_WINDOW_MS - now) / 1000));
+  return { used, max, remaining, percentRemaining, resetsInSec };
+}
+
+function recordApiCall(subscriptionId) {
+  // Touch the snapshot first so a stale window is rolled over before incrementing.
+  getQuotaSnapshot(subscriptionId);
+  const entry = apiQuotaTracker.get(subscriptionId);
+  entry.count += 1;
+  return getQuotaSnapshot(subscriptionId);
+}
 
 // Cache credential instance (thread-safe, handles token refresh internally)
 let credential = null;
@@ -343,6 +375,18 @@ app.get('/api/config', async (_req, res) => {
   });
 });
 
+// GET /api/quota — returns current Spot API quota usage for a subscription
+app.get('/api/quota', (req, res) => {
+  const subscriptionId = req.query.subscriptionId;
+  if (!subscriptionId) {
+    return res.status(400).json({ error: 'subscriptionId query parameter is required' });
+  }
+  if (!CONFIG.subscriptions.find(s => s.id === subscriptionId)) {
+    return res.status(403).json({ error: 'Subscription not in allowed list' });
+  }
+  res.json(getQuotaSnapshot(subscriptionId));
+});
+
 // POST /api/scores — fetches Spot Placement Scores for given parameters
 // Body: { subscriptionId, region, skus: string[], desiredCount?: number }
 // Streams NDJSON progress events back to the client
@@ -389,6 +433,8 @@ app.post('/api/scores', async (req, res) => {
     const evictionMap = await fetchEvictionRates(tokenResponse.token, skus, region);
 
     send({ type: 'start', totalBatches, totalSkus: skus.length });
+    // Emit initial quota snapshot so the UI shows current usage even before the first batch
+    send({ type: 'quota', ...getQuotaSnapshot(subscriptionId) });
 
     for (let i = 0; i < skus.length; i += CONFIG.batchSize) {
       if (res.writableEnded) break; // client disconnected
@@ -425,6 +471,9 @@ app.post('/api/scores', async (req, res) => {
             evictionRate: evictionMap[(s.sku || '').toLowerCase()] || 'N/A'
           }));
           send({ type: 'scores', batchIndex, count: scores.length, scores });
+          // Record the call against our quota budget and broadcast the new snapshot
+          const snap = recordApiCall(subscriptionId);
+          send({ type: 'quota', ...snap });
           success = true;
           break;
         } else if (response.status === 429) {

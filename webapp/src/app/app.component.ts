@@ -2,7 +2,7 @@ import { Component, OnInit, OnDestroy, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { SpotScoreService, StreamEvent } from './services/spot-score.service';
-import { DashboardConfig, SpotScore } from './models/spot-score.model';
+import { DashboardConfig, QuotaInfo, SpotScore } from './models/spot-score.model';
 
 @Component({
   selector: 'app-root',
@@ -37,9 +37,13 @@ export class AppComponent implements OnInit, OnDestroy {
   // SKU family helpers
   familyKeys: string[] = [];
 
-  // Category & Series filters
-  selectedCategory = 'All';
-  selectedSeries = 'All';
+  // Category & Series filters (no longer support 'All' — always a concrete selection)
+  selectedCategory = '';
+  selectedSeries = '';
+
+  // API Quota tracking
+  quotaInfo: QuotaInfo | null = null;
+  private quotaRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
   // Loading animation
   loadingMessages = [
@@ -67,7 +71,6 @@ export class AppComponent implements OnInit, OnDestroy {
       next: (cfg) => {
         this.config = cfg;
         this.familyKeys = Object.keys(cfg.skuFamilies);
-        this.selectedFamilies = [...this.familyKeys];
         this.desiredCount = cfg.defaultDesiredCount;
         if (cfg.subscriptions.length === 1) {
           this.selectedSubscription = cfg.subscriptions[0].id;
@@ -76,7 +79,22 @@ export class AppComponent implements OnInit, OnDestroy {
         if (cfg.regions.includes('centralindia')) {
           this.selectedRegion = 'centralindia';
         }
+        // Default category + series to the first available (no longer 'All')
+        const cats = this.categories;
+        if (cats.length > 0) {
+          this.selectedCategory = cats[0];
+          const series = this.seriesOptions;
+          if (series.length > 0) {
+            this.selectedSeries = series[0];
+          }
+          this.selectedFamilies = [...this.filteredFamilyKeys];
+        }
         this.configLoading = false;
+        // Kick off quota tracking for the default subscription
+        if (this.selectedSubscription) {
+          this.refreshQuota();
+          this.startQuotaAutoRefresh();
+        }
       },
       error: (err) => {
         console.error('Failed to load config', err);
@@ -87,7 +105,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   /** Distinct categories extracted from family key prefixes */
   get categories(): string[] {
-    return ['All', ...new Set(this.familyKeys.map(f => {
+    return [...new Set(this.familyKeys.map(f => {
       const idx = f.indexOf(' - ');
       return idx >= 0 ? f.substring(0, idx) : f;
     }))];
@@ -95,22 +113,19 @@ export class AppComponent implements OnInit, OnDestroy {
 
   /** Series options for the currently selected category */
   get seriesOptions(): string[] {
-    const families = this.selectedCategory === 'All'
-      ? this.familyKeys
-      : this.familyKeys.filter(f => f.startsWith(this.selectedCategory + ' - ') || f === this.selectedCategory);
-    return ['All', ...families.map(f => {
+    if (!this.selectedCategory) return [];
+    const families = this.familyKeys.filter(f => f.startsWith(this.selectedCategory + ' - ') || f === this.selectedCategory);
+    return families.map(f => {
       const idx = f.indexOf(' - ');
       return idx >= 0 ? f.substring(idx + 3) : f;
-    })];
+    });
   }
 
   /** Family keys filtered by the selected category and series */
   get filteredFamilyKeys(): string[] {
-    let filtered = this.familyKeys;
-    if (this.selectedCategory !== 'All') {
-      filtered = filtered.filter(f => f.startsWith(this.selectedCategory + ' - ') || f === this.selectedCategory);
-    }
-    if (this.selectedSeries !== 'All') {
+    if (!this.selectedCategory) return [];
+    let filtered = this.familyKeys.filter(f => f.startsWith(this.selectedCategory + ' - ') || f === this.selectedCategory);
+    if (this.selectedSeries) {
       filtered = filtered.filter(f => {
         const idx = f.indexOf(' - ');
         const series = idx >= 0 ? f.substring(idx + 3) : f;
@@ -121,12 +136,18 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   onCategoryChange(): void {
-    this.selectedSeries = 'All';
+    // When category changes, reset series to the first available in the new category
+    const series = this.seriesOptions;
+    this.selectedSeries = series.length > 0 ? series[0] : '';
     this.selectedFamilies = [...this.filteredFamilyKeys];
   }
 
   onSeriesChange(): void {
     this.selectedFamilies = [...this.filteredFamilyKeys];
+  }
+
+  onSubscriptionChange(): void {
+    this.refreshQuota();
   }
 
   get selectedSkus(): string[] {
@@ -215,6 +236,16 @@ export class AppComponent implements OnInit, OnDestroy {
         this.clearCountdown();
         this.progressStatus = '';
         break;
+
+      case 'quota':
+        this.quotaInfo = {
+          used: event.used ?? 0,
+          max: event.max ?? 0,
+          remaining: event.remaining ?? 0,
+          percentRemaining: event.percentRemaining ?? 0,
+          resetsInSec: event.resetsInSec ?? 0
+        };
+        break;
     }
   }
 
@@ -252,6 +283,49 @@ export class AppComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stopFetch();
+    this.stopQuotaAutoRefresh();
+  }
+
+  // --- API quota helpers ---
+  refreshQuota(): void {
+    if (!this.selectedSubscription) {
+      this.quotaInfo = null;
+      return;
+    }
+    this.spotService.getQuota(this.selectedSubscription).subscribe({
+      next: (q) => this.zone.run(() => { this.quotaInfo = q; }),
+      error: () => {} // silent; quota is non-critical
+    });
+  }
+
+  private startQuotaAutoRefresh(): void {
+    this.stopQuotaAutoRefresh();
+    // Refresh every 30s so the user sees the rolling-window reset countdown advance
+    this.quotaRefreshTimer = setInterval(() => this.refreshQuota(), 30000);
+  }
+
+  private stopQuotaAutoRefresh(): void {
+    if (this.quotaRefreshTimer) {
+      clearInterval(this.quotaRefreshTimer);
+      this.quotaRefreshTimer = null;
+    }
+  }
+
+  /** CSS class for the quota progress bar based on % remaining */
+  quotaClass(): string {
+    if (!this.quotaInfo) return 'quota-bar-good';
+    const p = this.quotaInfo.percentRemaining;
+    if (p >= 50) return 'quota-bar-good';
+    if (p >= 20) return 'quota-bar-warn';
+    return 'quota-bar-critical';
+  }
+
+  /** Friendly "resets in" label, e.g., "43 min" or "7 sec" */
+  quotaResetLabel(): string {
+    if (!this.quotaInfo) return '';
+    const s = this.quotaInfo.resetsInSec;
+    if (s >= 60) return `${Math.ceil(s / 60)} min`;
+    return `${s} sec`;
   }
 
   private startLoadingAnimation(): void {}

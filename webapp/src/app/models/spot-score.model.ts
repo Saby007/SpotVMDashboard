@@ -7,6 +7,14 @@ export interface SpotScore {
   evictionRate: string;
 }
 
+export interface QuotaInfo {
+  used: number;
+  max: number;
+  remaining: number;
+  percentRemaining: number;
+  resetsInSec: number;
+}
+
 export interface ScoreResponse {
   scores: SpotScore[];
   errors: { batch: string[]; status: number; message: string }[];

@@ -496,3 +496,196 @@ thead .sticky-col {
   background: #ef4444;
   color: #fff;
 }
+
+/* === API Quota Indicator === */
+
+.quota-row {
+  margin-top: 1rem;
+  padding: 0.875rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-left-width: 3px;
+  transition: border-color 0.3s ease;
+}
+.quota-row.quota-bar-good { border-left-color: var(--score-high, #22c55e); }
+.quota-row.quota-bar-warn { border-left-color: var(--score-medium, #eab308); }
+.quota-row.quota-bar-critical { border-left-color: var(--score-low, #ef4444); }
+
+.quota-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+.quota-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.quota-value {
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.quota-value strong {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+.quota-detail {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.quota-bar-track {
+  height: 8px;
+  background: var(--bg-secondary, rgba(255,255,255,0.06));
+  border-radius: 4px;
+  overflow: hidden;
+}
+.quota-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease, background-color 0.3s ease;
+}
+.quota-bar-good .quota-bar-fill { background: var(--score-high, #22c55e); }
+.quota-bar-warn .quota-bar-fill { background: var(--score-medium, #eab308); }
+.quota-bar-critical .quota-bar-fill {
+  background: var(--score-low, #ef4444);
+  animation: quotaPulse 1.4s ease-in-out infinite;
+}
+@keyframes quotaPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
+/* === Animated tooltips on column headers === */
+
+.th-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  position: relative;
+}
+
+.info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg-secondary, rgba(255,255,255,0.08));
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, 'Times New Roman', serif;
+  cursor: help;
+  position: relative;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+  user-select: none;
+  outline: none;
+}
+.info-icon:hover,
+.info-icon:focus-visible {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  transform: scale(1.15);
+}
+
+.tooltip {
+  /* Hidden by default; faded + slid up */
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%) translateY(6px);
+  width: max-content;
+  max-width: 280px;
+  padding: 0.6rem 0.75rem;
+  background: #0f172a;
+  color: #f1f5f9;
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: normal;
+  text-transform: none;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 100;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.tooltip::after {
+  /* Little arrow pointing down at the info icon */
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #0f172a;
+}
+
+/* Bottom-positioned variant (e.g., for the quota info icon at top of card) */
+.tooltip.tooltip-bottom {
+  bottom: auto;
+  top: calc(100% + 10px);
+  transform: translateX(-50%) translateY(-6px);
+}
+.tooltip.tooltip-bottom::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: #0f172a;
+}
+
+/* Left-shifted variant for the last column (Quota) so tooltip doesn't overflow viewport */
+.tooltip.tooltip-left {
+  left: auto;
+  right: -8px;
+  transform: translateX(0) translateY(6px);
+}
+.tooltip.tooltip-left::after {
+  left: auto;
+  right: 12px;
+  transform: none;
+}
+
+.info-icon:hover .tooltip,
+.info-icon:focus-visible .tooltip,
+.info-icon:focus-within .tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+.info-icon:hover .tooltip.tooltip-bottom,
+.info-icon:focus-visible .tooltip.tooltip-bottom,
+.info-icon:focus-within .tooltip.tooltip-bottom {
+  transform: translateX(-50%) translateY(0);
+}
+.info-icon:hover .tooltip.tooltip-left,
+.info-icon:focus-visible .tooltip.tooltip-left,
+.info-icon:focus-within .tooltip.tooltip-left {
+  transform: translateX(0) translateY(0);
+}
+
+/* Make sure clickable sortable headers still feel normal even with the info icon */
+th.sortable {
+  cursor: pointer;
+}
+th.sortable .info-icon {
+  cursor: help;
+}

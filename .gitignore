@@ -23,3 +23,7 @@ out-tsc/
 # Logs
 logs/
 *.log
+
+# Deployment artifacts
+deploy.zip
+*.zip

@@ -15,7 +15,7 @@
     <div class="control-row">
       <div class="control-group">
         <label for="subscription">Subscription</label>
-        <select id="subscription" [(ngModel)]="selectedSubscription">
+        <select id="subscription" [(ngModel)]="selectedSubscription" (ngModelChange)="onSubscriptionChange()">
           <option value="" disabled>Select subscription</option>
           <option *ngFor="let sub of config.subscriptions" [value]="sub.id">{{ sub.name }}</option>
         </select>
@@ -48,6 +48,7 @@
       <div class="control-group">
         <label for="category">Category</label>
         <select id="category" [(ngModel)]="selectedCategory" (ngModelChange)="onCategoryChange()">
+          <option value="" disabled>Select category</option>
           <option *ngFor="let cat of categories" [value]="cat">{{ cat }}</option>
         </select>
       </div>
@@ -55,12 +56,34 @@
       <div class="control-group">
         <label for="series">Instance Series</label>
         <select id="series" [(ngModel)]="selectedSeries" (ngModelChange)="onSeriesChange()">
+          <option value="" disabled>Select series</option>
           <option *ngFor="let s of seriesOptions" [value]="s">{{ s }}</option>
         </select>
       </div>
 
       <div class="control-group sku-count-group">
         <span class="sku-count">{{ selectedSkus.length }} SKUs selected</span>
+      </div>
+    </div>
+
+    <!-- API Quota Indicator -->
+    <div *ngIf="quotaInfo" class="quota-row" [ngClass]="quotaClass()">
+      <div class="quota-header">
+        <span class="quota-label">
+          API Quota Remaining
+          <span class="info-icon" tabindex="0">i
+            <span class="tooltip tooltip-bottom">
+              Approximate per-subscription Spot Placement Score API budget for the current 1-hour window. Each batch of 5 SKUs uses one call. When this hits 0, you'll see 429 errors until the window resets.
+            </span>
+          </span>
+        </span>
+        <span class="quota-value">
+          <strong>{{ quotaInfo.percentRemaining }}%</strong>
+          <span class="quota-detail">({{ quotaInfo.remaining }} / {{ quotaInfo.max }} calls, resets in {{ quotaResetLabel() }})</span>
+        </span>
+      </div>
+      <div class="quota-bar-track">
+        <div class="quota-bar-fill" [style.width.%]="quotaInfo.percentRemaining"></div>
       </div>
     </div>
   </section>
@@ -161,22 +184,64 @@
       <table>
         <thead>
           <tr>
-            <th (click)="sortBy('sku')" class="sortable">SKU
-              <span *ngIf="sortColumn === 'sku'">{{ sortAsc ? '▲' : '▼' }}</span>
+            <th (click)="sortBy('sku')" class="sortable">
+              <span class="th-content">
+                <span>SKU
+                  <span *ngIf="sortColumn === 'sku'">{{ sortAsc ? '▲' : '▼' }}</span>
+                </span>
+                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
+                  <span class="tooltip">Azure VM size identifier (e.g., Standard_D4s_v5). Determines vCPU count, memory, disk type, and supported features such as accelerated networking.</span>
+                </span>
+              </span>
             </th>
-            <th (click)="sortBy('region')" class="sortable">Region
-              <span *ngIf="sortColumn === 'region'">{{ sortAsc ? '▲' : '▼' }}</span>
+            <th (click)="sortBy('region')" class="sortable">
+              <span class="th-content">
+                <span>Region
+                  <span *ngIf="sortColumn === 'region'">{{ sortAsc ? '▲' : '▼' }}</span>
+                </span>
+                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
+                  <span class="tooltip">Azure datacenter region (e.g., centralindia, eastus2) where this Spot VM would be deployed. Latency, pricing, and capacity vary per region.</span>
+                </span>
+              </span>
             </th>
-            <th (click)="sortBy('availabilityZone')" class="sortable">Zone
-              <span *ngIf="sortColumn === 'availabilityZone'">{{ sortAsc ? '▲' : '▼' }}</span>
+            <th (click)="sortBy('availabilityZone')" class="sortable">
+              <span class="th-content">
+                <span>Zone
+                  <span *ngIf="sortColumn === 'availabilityZone'">{{ sortAsc ? '▲' : '▼' }}</span>
+                </span>
+                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
+                  <span class="tooltip">Availability Zone within the region (1, 2, or 3). Zones are physically isolated datacenters — spreading VMs across zones protects against zone-level failures.</span>
+                </span>
+              </span>
             </th>
-            <th (click)="sortBy('score')" class="sortable">Score
-              <span *ngIf="sortColumn === 'score'">{{ sortAsc ? '▲' : '▼' }}</span>
+            <th (click)="sortBy('score')" class="sortable">
+              <span class="th-content">
+                <span>Score
+                  <span *ngIf="sortColumn === 'score'">{{ sortAsc ? '▲' : '▼' }}</span>
+                </span>
+                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
+                  <span class="tooltip">Azure Spot Placement Score: <b>High</b> = strong availability, <b>Medium</b> = some availability, <b>Low</b> = limited availability, <b>Restricted</b> = SKU not available in this region. Reflects real-time Azure capacity — not a guarantee.</span>
+                </span>
+              </span>
             </th>
-            <th (click)="sortBy('evictionRate')" class="sortable">Eviction Rate
-              <span *ngIf="sortColumn === 'evictionRate'">{{ sortAsc ? '▲' : '▼' }}</span>
+            <th (click)="sortBy('evictionRate')" class="sortable">
+              <span class="th-content">
+                <span>Eviction Rate
+                  <span *ngIf="sortColumn === 'evictionRate'">{{ sortAsc ? '▲' : '▼' }}</span>
+                </span>
+                <span class="info-icon" (click)="$event.stopPropagation()" tabindex="0">i
+                  <span class="tooltip">Historical eviction rate over the last 28 days for Spot VMs of this SKU. Lower is better. <b>0-5%</b> = very stable, <b>20%+</b> = frequent evictions — plan workloads accordingly.</span>
+                </span>
+              </span>
             </th>
-            <th>Quota</th>
+            <th>
+              <span class="th-content">
+                <span>Quota</span>
+                <span class="info-icon" tabindex="0">i
+                  <span class="tooltip tooltip-left">Whether your subscription has available <b>VM CPU quota</b> in this region to actually deploy this SKU. Even with a High score, deployment fails if quota is exhausted. Request a quota increase via Azure Portal → Quotas if needed.</span>
+                </span>
+              </span>
+            </th>
           </tr>
         </thead>
         <tbody>

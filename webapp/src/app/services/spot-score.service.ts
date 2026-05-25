@@ -1,10 +1,10 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { DashboardConfig } from '../models/spot-score.model';
+import { DashboardConfig, QuotaInfo } from '../models/spot-score.model';
 
 export interface StreamEvent {
-  type: 'start' | 'batch' | 'scores' | 'retry' | 'error' | 'done' | 'fatal';
+  type: 'start' | 'batch' | 'scores' | 'retry' | 'error' | 'done' | 'fatal' | 'quota';
   totalBatches?: number;
   totalSkus?: number;
   batchIndex?: number;
@@ -17,6 +17,12 @@ export interface StreamEvent {
   status?: number;
   message?: string;
   timestamp?: string;
+  // quota event fields
+  used?: number;
+  max?: number;
+  remaining?: number;
+  percentRemaining?: number;
+  resetsInSec?: number;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -26,6 +32,10 @@ export class SpotScoreService {
 
   getConfig(): Observable<DashboardConfig> {
     return this.http.get<DashboardConfig>('/api/config');
+  }
+
+  getQuota(subscriptionId: string): Observable<QuotaInfo> {
+    return this.http.get<QuotaInfo>(`/api/quota?subscriptionId=${encodeURIComponent(subscriptionId)}`);
   }
 
   /**
