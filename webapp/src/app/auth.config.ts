@@ -2,8 +2,11 @@ import { LogLevel, IPublicClientApplication, PublicClientApplication, Interactio
 import { MsalGuardConfiguration, MsalInterceptorConfiguration } from '@azure/msal-angular';
 
 // Public identifiers (not secrets).
-export const ENTRA_TENANT_ID = '16b3c013-d300-468d-ac64-7eda0820b6d3';
-export const ENTRA_APP_CLIENT_ID = '2ba186ae-8d31-4a28-94d2-dbf94c9c2a19';
+// Personal Microsoft tenant — used for testing because MS-corp policy blocks
+// user consent for third-party apps. The architecture is identical for HDFC's tenant;
+// only these two IDs need to change.
+export const ENTRA_TENANT_ID = '780a4ea6-63fc-43dd-8d57-764f0db161ed';
+export const ENTRA_APP_CLIENT_ID = '5ce73c51-046b-492d-89c6-66517b817e63';
 
 // SPA-only architecture: the browser acquires ARM tokens directly via MSAL and calls
 // management.azure.com itself. No backend OBO, no custom API scope required. ARM's
