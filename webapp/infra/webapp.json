@@ -74,7 +74,7 @@
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', format('{0}-plan', parameters('baseName')))]",
         "httpsOnly": true,
         "siteConfig": {
-          "linuxFxVersion": "NODE|20-lts",
+          "linuxFxVersion": "NODE|22-lts",
           "appCommandLine": "node server.js",
           "minTlsVersion": "1.2",
           "ftpsState": "Disabled",
@@ -83,7 +83,7 @@
           "appSettings": [
             {
               "name": "WEBSITE_NODE_DEFAULT_VERSION",
-              "value": "~20"
+              "value": "~22"
             },
             {
               "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",

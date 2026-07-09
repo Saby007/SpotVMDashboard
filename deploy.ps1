@@ -131,6 +131,9 @@ $principalId = az webapp identity assign `
     --resource-group $ResourceGroup `
     --name $AppName `
     --query principalId -o tsv
+if ([string]::IsNullOrWhiteSpace($principalId)) {
+    throw "Could not obtain a managed-identity principal for web app '$AppName' in resource group '$ResourceGroup'. Make sure the App Service exists (see README Step 2) before running the deploy."
+}
 Write-Host "Identity principalId: $principalId"
 
 # --- App settings ----------------------------------------------------------
@@ -141,7 +144,7 @@ az webapp config appsettings set `
     --settings `
         "AZURE_SUBSCRIPTION_ID=$SubscriptionId" `
         "AZURE_SUBSCRIPTION_NAME=$subscriptionName" `
-        "WEBSITE_NODE_DEFAULT_VERSION=~20" `
+        "WEBSITE_NODE_DEFAULT_VERSION=~22" `
         "SCM_DO_BUILD_DURING_DEPLOYMENT=true" | Out-Null
 
 # --- RBAC ------------------------------------------------------------------

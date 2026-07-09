@@ -106,7 +106,7 @@ Open http://localhost:8080. The header shows a **LOCAL DEV** badge, and the app 
 
 ## Deploy to Azure
 
-You need three things in Azure: a **resource group**, an **App Service** (Linux, Node 20) with a **managed identity**, and two least-privilege **read-only** roles for that identity on your subscription (**`Reader`** + **`Spot Placement Score Reader`**). Then you deploy the built app.
+You need three things in Azure: a **resource group**, an **App Service** (Linux, Node 22) with a **managed identity**, and two least-privilege **read-only** roles for that identity on your subscription (**`Reader`** + **`Spot Placement Score Reader`**). Then you deploy the built app.
 
 Pick **Option A** (guided script) or **Option B** (manual `az` commands). Both assume you've run `az login`.
 
@@ -127,7 +127,7 @@ az account set --subscription $SUBSCRIPTION_ID
 az group create --name $RG --location $LOCATION
 ```
 
-### Step 2 — Create the App Service (Linux, Node 20)
+### Step 2 — Create the App Service (Linux, Node 22)
 
 ```powershell
 # App Service plan (B1 Basic is fine for this app)
@@ -138,12 +138,12 @@ az appservice plan create `
   --sku B1 `
   --is-linux
 
-# Web app on the Node 20 runtime
+# Web app on the Node 22 runtime
 az webapp create `
   --name $APP_NAME `
   --resource-group $RG `
   --plan $PLAN_NAME `
-  --runtime "NODE:20-lts"
+  --runtime "NODE:22-lts"
 
 # Start the host with `node server.js`, and let Oryx install deps on deploy
 az webapp config set `
@@ -154,7 +154,7 @@ az webapp config set `
 az webapp config appsettings set `
   --name $APP_NAME `
   --resource-group $RG `
-  --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true WEBSITE_NODE_DEFAULT_VERSION="~20"
+  --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true WEBSITE_NODE_DEFAULT_VERSION="~22"
 ```
 
 ### Step 3 — Enable the managed identity and grant least-privilege roles

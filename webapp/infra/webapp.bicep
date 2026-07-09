@@ -1,5 +1,5 @@
 // ============================================================================
-// Spot VM Dashboard Web App — Azure App Service (Node.js 20)
+// Spot VM Dashboard Web App — Azure App Service (Node.js 22)
 // Deploys: App Service Plan + Web App with System-assigned Managed Identity.
 //
 // After deployment, assign the managed identity two read-only roles on the
@@ -50,7 +50,7 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
     serverFarmId: appServicePlan.id
     httpsOnly: true
     siteConfig: {
-      linuxFxVersion: 'NODE|20-lts'
+      linuxFxVersion: 'NODE|22-lts'
       appCommandLine: 'node server.js'
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
@@ -59,7 +59,7 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
       appSettings: [
         {
           name: 'WEBSITE_NODE_DEFAULT_VERSION'
-          value: '~20'
+          value: '~22'
         }
         {
           name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
