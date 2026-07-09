@@ -41,7 +41,7 @@ The app currently runs **without any user login**. All Azure calls are made **se
 └──────────────────────────────────────────────┘
 ```
 
-**Bottom line:** whoever/whatever the host authenticates as needs two **read-only** roles on the target subscription — **`Reader`** and **`Spot Placement Score Reader`**. That is the CLI user locally, and the App Service managed identity in the cloud.
+**Bottom line:** whoever/whatever the host authenticates as needs two **read-only** roles on the target subscription — **`Reader`** and **`Compute Recommendations Role`**. That is the CLI user locally, and the App Service managed identity in the cloud.
 
 ---
 
@@ -79,7 +79,7 @@ The app currently runs **without any user login**. All Azure calls are made **se
 - **Node.js 20+** and npm
 - **Azure CLI 2.55+** (`az`)
 - **PowerShell 7+** (for `deploy.ps1` on any OS)
-- An Azure subscription where you have rights to create a resource group and an App Service, and to assign roles (`Reader` and `Spot Placement Score Reader`).
+- An Azure subscription where you have rights to create a resource group and an App Service, and to assign roles (`Reader` and `Compute Recommendations Role`).
 
 ---
 
@@ -117,7 +117,7 @@ Open http://localhost:8080. The header shows a **LOCAL DEV** badge, and the app 
 
 ## Deploy to Azure
 
-You need three things in Azure: a **resource group**, an **App Service** (Linux, Node 22) with a **managed identity**, and two least-privilege **read-only** roles for that identity on your subscription (**`Reader`** + **`Spot Placement Score Reader`**). Then you deploy the built app.
+You need three things in Azure: a **resource group**, an **App Service** (Linux, Node 22) with a **managed identity**, and two least-privilege **read-only** roles for that identity on your subscription (**`Reader`** + **`Compute Recommendations Role`**). Then you deploy the built app.
 
 Pick **Option A** (guided script) or **Option B** (manual `az` commands). Both assume you've run `az login`.
 
@@ -173,7 +173,7 @@ az webapp config appsettings set `
 Turn on the web app's system-assigned managed identity, then grant it two **read-only** roles on the subscription (no Contributor or Owner):
 
 - **`Reader`** — read VM SKUs, Spot vCPU quota (usages), and eviction rates (Resource Graph).
-- **`Spot Placement Score Reader`** — call the Spot placement score API (`.../placementScores/spot/generate`), which `Reader` alone does not permit.
+- **`Compute Recommendations Role`** — call the Spot placement score API (`Microsoft.Compute/locations/placementScores/generate/action`), which `Reader` alone does not permit.
 
 ```powershell
 # Turn on the system-assigned managed identity and capture its principal id
@@ -183,7 +183,7 @@ $PRINCIPAL_ID = az webapp identity assign `
   --query principalId -o tsv
 
 # Grant both read-only roles at subscription scope
-foreach ($role in 'Reader', 'Spot Placement Score Reader') {
+foreach ($role in 'Reader', 'Compute Recommendations Role') {
   az role assignment create `
     --assignee-object-id $PRINCIPAL_ID `
     --assignee-principal-type ServicePrincipal `
@@ -204,7 +204,7 @@ az webapp config appsettings set `
 
 > To expose **multiple** subscriptions, set `AZURE_SUBSCRIPTIONS` to a JSON array instead, e.g.
 > `[{"id":"<sub-guid>","name":"Prod"},{"id":"<sub-guid>","name":"Dev"}]`.
-> The identity needs both roles (`Reader` + `Spot Placement Score Reader`) on each. If neither app
+> The identity needs both roles (`Reader` + `Compute Recommendations Role`) on each. If neither app
 > setting is present, the host lists every subscription the identity can see.
 
 ### Step 5 — Build and deploy
@@ -314,7 +314,7 @@ The host auto-detects the environment: outside App Service it uses the Azure CLI
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Deploy fails: *"...Angular CLI outside a workspace"*           | You shipped the repo `package.json` (with the `postinstall` build). Use `deploy.ps1` or the runtime-only package from Option B. |
 | `az webapp deploy` reports *"Site failed to start in 10 mins"* | On Basic tiers a cold start + first `npm install` can exceed the CLI's poll. The site usually starts anyway — check `https://<app>/healthz`. `deploy.ps1` uses `--track-status false` to avoid the false failure. |
-| `/api/*` returns 403 / empty                                  | The host identity is missing `Reader` and/or `Spot Placement Score Reader`. Assign both (Step 3) and wait a few minutes. |
+| `/api/*` returns 403 / empty                                  | The host identity is missing `Reader` and/or `Compute Recommendations Role`. Assign both (Step 3) and wait a few minutes. |
 | Local run can't get a token                                   | Run `az login`, then restart `npm start`.                                                                     |
 | Inspect deploy logs                                           | `az webapp log deployment show -g <rg> -n <app>` and `az webapp log tail -g <rg> -n <app>`.                   |
 
@@ -330,4 +330,4 @@ The host auto-detects the environment: outside App Service it uses the Azure CLI
 
 - This repo contains **no** subscription IDs, tenant IDs, client IDs, secrets, or connection strings. Provide your subscription at deploy time via `deploy.ps1 -SubscriptionId` or the `az account` context.
 - Production authentication uses a **managed identity** — there are no credentials to store or rotate.
-- Grant the identity the **least privilege** it needs — two read-only roles (`Reader` + `Spot Placement Score Reader`) on the target subscription. No Contributor or Owner.
+- Grant the identity the **least privilege** it needs — two read-only roles (`Reader` + `Compute Recommendations Role`) on the target subscription. No Contributor or Owner.

@@ -10,7 +10,7 @@
       3. Ensures the web app has a system-assigned managed identity.
       4. Sets the subscription app settings the backend reads at startup.
       5. Grants the identity two least-privilege read-only roles on the subscription:
-         'Reader' and 'Spot Placement Score Reader'.
+         'Reader' and 'Compute Recommendations Role'.
       6. Zip-deploys the package and restarts the app.
 
 .EXAMPLE
@@ -151,8 +151,8 @@ az webapp config appsettings set `
 if (-not $SkipRoleAssignment) {
     Write-Step "Assigning least-privilege roles on the subscription to the managed identity"
     # Reader                      -> read VM SKUs, Spot vCPU quota (usages), eviction rates (Resource Graph)
-    # Spot Placement Score Reader -> call the Spot placement score API (generate action)
-    foreach ($role in 'Reader', 'Spot Placement Score Reader') {
+    # Compute Recommendations Role -> call the Spot placement score API (generate action)
+    foreach ($role in 'Reader', 'Compute Recommendations Role') {
         try {
             az role assignment create `
                 --assignee-object-id $principalId `

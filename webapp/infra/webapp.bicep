@@ -4,7 +4,7 @@
 //
 // After deployment, assign the managed identity two read-only roles on the
 // target subscription: 'Reader' (SKUs, quota, eviction rates) and
-// 'Spot Placement Score Reader' (the Spot placement score API).
+// 'Compute Recommendations Role' (the Spot placement score API).
 // ============================================================================
 
 targetScope = 'resourceGroup'
