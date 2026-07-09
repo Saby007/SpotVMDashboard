@@ -83,6 +83,17 @@ The app currently runs **without any user login**. All Azure calls are made **se
 
 ---
 
+## Get the code
+
+```powershell
+git clone https://github.com/Saby007/SpotVMDashboard.git
+cd SpotVMDashboard
+```
+
+> If the repo is private, `git clone` will prompt for your GitHub credentials — or use the GitHub CLI: `gh repo clone Saby007/SpotVMDashboard`. All commands below assume you are in the cloned `SpotVMDashboard` folder (the repo root).
+
+---
+
 ## Run locally
 
 Local mode uses your `az login` session — no app registration or secrets required.
