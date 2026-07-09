@@ -9,7 +9,8 @@
       2. Packages server.js + package.json + package-lock.json + dist/.
       3. Ensures the web app has a system-assigned managed identity.
       4. Sets the subscription app settings the backend reads at startup.
-      5. Grants the identity Reader on the target subscription (needed for ARM calls).
+      5. Grants the identity two least-privilege read-only roles on the subscription:
+         'Reader' and 'Spot Placement Score Reader'.
       6. Zip-deploys the package and restarts the app.
 
 .EXAMPLE
@@ -29,7 +30,7 @@ param(
     # Skip `npm install` (use when node_modules is already present and current).
     [switch]$SkipInstall,
 
-    # Skip the Reader role assignment (use when it already exists or you lack rights).
+    # Skip the role assignments (use when they already exist or you lack rights).
     [switch]$SkipRoleAssignment
 )
 
@@ -145,22 +146,26 @@ az webapp config appsettings set `
 
 # --- RBAC ------------------------------------------------------------------
 if (-not $SkipRoleAssignment) {
-    Write-Step "Assigning Reader role on subscription to the managed identity"
-    try {
-        az role assignment create `
-            --assignee-object-id $principalId `
-            --assignee-principal-type ServicePrincipal `
-            --role Reader `
-            --scope "/subscriptions/$SubscriptionId" | Out-Null
-        Write-Host "Reader role assigned (or already present)."
-    }
-    catch {
-        Write-Warning "Reader role assignment failed: $($_.Exception.Message)"
-        Write-Warning "Assign it manually, otherwise backend /api calls to Azure will fail."
+    Write-Step "Assigning least-privilege roles on the subscription to the managed identity"
+    # Reader                      -> read VM SKUs, Spot vCPU quota (usages), eviction rates (Resource Graph)
+    # Spot Placement Score Reader -> call the Spot placement score API (generate action)
+    foreach ($role in 'Reader', 'Spot Placement Score Reader') {
+        try {
+            az role assignment create `
+                --assignee-object-id $principalId `
+                --assignee-principal-type ServicePrincipal `
+                --role $role `
+                --scope "/subscriptions/$SubscriptionId" | Out-Null
+            Write-Host "Assigned '$role' (or already present)."
+        }
+        catch {
+            Write-Warning "Role assignment for '$role' failed: $($_.Exception.Message)"
+            Write-Warning "Assign it manually, otherwise some backend /api calls will fail."
+        }
     }
 }
 else {
-    Write-Host "Skipping Reader role assignment (per -SkipRoleAssignment)."
+    Write-Host "Skipping role assignments (per -SkipRoleAssignment)."
 }
 
 # --- Deploy ----------------------------------------------------------------

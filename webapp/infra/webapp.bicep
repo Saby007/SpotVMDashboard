@@ -2,8 +2,9 @@
 // Spot VM Dashboard Web App — Azure App Service (Node.js 20)
 // Deploys: App Service Plan + Web App with System-assigned Managed Identity.
 //
-// After deployment, assign Compute Recommendations Role to the MI on target
-// subscriptions so the backend can call the Spot Placement Score API.
+// After deployment, assign the managed identity two read-only roles on the
+// target subscription: 'Reader' (SKUs, quota, eviction rates) and
+// 'Spot Placement Score Reader' (the Spot placement score API).
 // ============================================================================
 
 targetScope = 'resourceGroup'
