@@ -50,7 +50,7 @@ if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     throw "Azure CLI (az) not found on PATH. Install it and run 'az login' first."
 }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-    throw "npm not found on PATH. Install Node.js 20+ first."
+    throw "npm not found on PATH. Install Node.js 20.19+, 22.12+, or 24+ first."
 }
 if (-not (Test-Path (Join-Path $webappDir 'server.js'))) {
     throw "Could not find webapp/server.js. Run this script from the repo root."
@@ -77,11 +77,17 @@ Push-Location $webappDir
 try {
     if (-not $SkipInstall) {
         Write-Step "Installing npm dependencies"
-        npm install
+        npm ci --ignore-scripts
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm dependency installation failed."
+        }
     }
 
     Write-Step "Building Angular bundle"
     npm run build
+    if ($LASTEXITCODE -ne 0) {
+        throw "Angular build failed."
+    }
 
     $browserDist = Join-Path $webappDir 'dist/spotvm-dashboard/browser'
     if (-not (Test-Path $browserDist)) {

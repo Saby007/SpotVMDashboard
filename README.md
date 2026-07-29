@@ -1,6 +1,6 @@
 # Spot VM Placement Score Dashboard
 
-An Angular 19 + Node/Express dashboard that shows **real-time Azure Spot VM placement scores**, eviction rates, and Spot quota for the VM sizes and regions you choose.
+An Angular 21 + Node/Express dashboard that shows **real-time Azure Spot VM placement scores**, eviction rates, and Spot quota for the VM sizes and regions you choose.
 
 The app currently runs **without any user login**. All Azure calls are made **server-side** by the Node host:
 
@@ -15,7 +15,7 @@ The app currently runs **without any user login**. All Azure calls are made **se
 
 ```
 ┌──────────────────────────────────────────────┐
-│  Angular 19 SPA (browser)                     │
+│  Angular 21 SPA (browser)                     │
 │  • No login screen                            │
 │  • Calls the Node host's /api/* endpoints     │
 └───────────────────────┬──────────────────────┘
@@ -76,7 +76,7 @@ The app currently runs **without any user login**. All Azure calls are made **se
 
 ## Prerequisites
 
-- **Node.js 20+** and npm
+- **Node.js 20.19+, 22.12+, or 24+** and npm
 - **Azure CLI 2.55+** (`az`)
 - **PowerShell 7+** (for `deploy.ps1` on any OS)
 - An Azure subscription where you have rights to create a resource group and an App Service, and to assign roles (`Reader` and `Compute Recommendations Role`).
