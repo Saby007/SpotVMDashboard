@@ -11,6 +11,8 @@ let server;
 let origin;
 let azureCalls;
 let upstream;
+let discoveryCalls;
+let discoveryUpstream;
 let catalogId = 10;
 
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers });
@@ -24,6 +26,20 @@ const catalogSku = (name, overrides = {}) => ({
 });
 const catalogQuery = (id = `00000000-0000-0000-0000-${String(catalogId++).padStart(12, '0')}`, location = region) =>
   `/api/config?subscriptionId=${id}&region=${location}`;
+const locationRows = [
+  { name: region, displayName: 'Central India', metadata: { regionType: 'Physical' } },
+  { name: 'eastus', displayName: 'East US', metadata: { regionType: 'Physical' } },
+  { name: 'spaincentral', displayName: 'Spain Central', metadata: { regionType: 'Physical' } },
+  { name: 'futureregion1', displayName: 'Future Region', metadata: { regionType: 'Physical' } },
+  { name: 'unsupportedregion', displayName: 'No VM Provider', metadata: { regionType: 'Physical' } },
+  { name: 'global', displayName: 'Global', metadata: { regionType: 'Logical' } }
+];
+const providerMetadata = { resourceTypes: [{
+  resourceType: 'virtualMachines', locations: ['Central India', 'East US', 'Spain Central', 'Future Region']
+}] };
+const discoveryResponse = async call => call.url.includes('/locations?')
+  ? json({ value: locationRows }) : json(providerMetadata);
+const isDiscovery = url => /\/subscriptions\/[^/]+\/locations\?/.test(url) || /\/providers\/Microsoft\.Compute\?/.test(url);
 
 async function request(route, body) {
   return realFetch(`${origin}${route}`, {
@@ -37,6 +53,7 @@ before(async () => {
   process.env.LOCAL_DEV = '0';
   process.env.IDENTITY_ENDPOINT = identityEndpoint;
   process.env.IDENTITY_HEADER = 'test-only-header';
+  process.env.DEFAULT_REGION = region;
   const app = require('../server');
   server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -49,6 +66,8 @@ after(async () => {
 
 beforeEach(() => {
   azureCalls = [];
+  discoveryCalls = [];
+  discoveryUpstream = discoveryResponse;
   upstream = async () => { throw new Error('Unexpected Azure request'); };
   mock.method(console, 'error', () => {});
   mock.method(console, 'warn', () => {});
@@ -58,6 +77,10 @@ beforeEach(() => {
     }
     assert.ok(String(url).startsWith('https://management.azure.com/'));
     const call = { url: String(url), body: options?.body ? JSON.parse(options.body) : undefined };
+    if (isDiscovery(call.url)) {
+      discoveryCalls.push(call);
+      return discoveryUpstream(call);
+    }
     azureCalls.push(call);
     return upstream(call);
   });
@@ -71,7 +94,8 @@ for (const [name, overrides] of [
   ['query injection region', { region: "centralindia' | take 1" }],
   ['zero count', { desiredCount: 0 }],
   ['negative count', { desiredCount: -1 }],
-  ['count above limit', { desiredCount: 11 }],
+  ['count above Azure int32 limit', { desiredCount: 2147483648 }],
+  ['unsafe count', { desiredCount: Number.MAX_SAFE_INTEGER + 1 }],
   ['fractional count', { desiredCount: 1.5 }],
   ['string count', { desiredCount: '5' }],
   ['null count', { desiredCount: null }],
@@ -85,7 +109,7 @@ for (const [name, overrides] of [
   ['duplicate location', { desiredLocations: [region, region] }],
   ['non-boolean zone selection', { availabilityZones: 'false' }]
 ]) {
-  test(`rejects ${name} before calling Azure`, async () => {
+  test(`rejects ${name} before generating Azure placement scores`, async () => {
     const response = await request('/api/placement-scores', input(overrides));
     assert.equal(response.status, 400);
     assert.equal(typeof (await response.json()).error, 'string');
@@ -297,25 +321,27 @@ test('does not replace a verified empty catalogue with static SKUs', async () =>
   assert.ok(config.warnings.some(warning => /no Spot-capable/.test(warning)));
 });
 
-test('discovery failure clearly marks the static fallback as unverified', async () => {
+test('SKU discovery failure returns an error without a static fallback', async () => {
   upstream = async () => json({ error: 'Forbidden' }, 403);
   const response = await request(catalogQuery());
   const config = await response.json();
-  assert.equal(config.catalogSource, 'static');
-  assert.equal(config.catalogFetchedAt, null);
-  assert.ok(config.warnings.some(warning => /unverified static list/.test(warning)));
+  assert.equal(response.status, 403);
+  assert.equal(typeof config.error, 'string');
+  assert.equal(Object.hasOwn(config, 'skuFamilies'), false);
+  assert.equal(Object.hasOwn(config, 'catalogSource'), false);
 });
 
 for (const overrides of [
   { restrictions: [{ type: 'UnrecognizedRestriction' }] },
   { capabilities: [{ name: 'LowPriorityCapable', value: 'Unknown' }] }
 ]) {
-  test(`invalid catalogue eligibility metadata is explicitly unverified: ${JSON.stringify(overrides)}`, async () => {
+  test(`invalid catalogue metadata fails closed: ${JSON.stringify(overrides)}`, async () => {
     upstream = async () => json({ value: [catalogSku(sku, overrides)] });
     const response = await request(catalogQuery());
     const config = await response.json();
-    assert.equal(config.catalogSource, 'static');
-    assert.ok(config.warnings.some(warning => /unverified static list/.test(warning)));
+    assert.equal(response.status, 502);
+    assert.equal(typeof config.error, 'string');
+    assert.equal(Object.hasOwn(config, 'skuFamilies'), false);
   });
 }
 
@@ -334,4 +360,123 @@ test('catalogue cache is scoped by subscription and region and expires after 15 
   clock += 15 * 60 * 1000 + 1;
   await request(route);
   assert.equal(azureCalls.length, 4);
+});
+
+test('region discovery uses Azure metadata and VM-provider support, not a fixed list', async () => {
+  upstream = async () => json({ value: [] });
+  const response = await request(catalogQuery());
+  const config = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(config.regions, ['centralindia', 'eastus', 'futureregion1', 'spaincentral']);
+  assert.equal(config.regions.includes('global'), false);
+  assert.equal(config.regions.includes('unsupportedregion'), false);
+  assert.equal(config.maxDesiredCount, 2147483647);
+  assert.ok(Number.isFinite(Date.parse(config.regionsFetchedAt)));
+  assert.equal(discoveryCalls.length, 2);
+});
+
+for (const count of [11, 100, 2147483647]) {
+  test(`passes supported desired count ${count} to Azure without clamping`, async () => {
+    upstream = async () => json({ placementScores: [score()] });
+    const response = await request('/api/placement-scores', input({ desiredCount: count }));
+    assert.equal(response.status, 200);
+    assert.equal(azureCalls[0].body.desiredCount, count);
+  });
+}
+
+test('a newly discovered region is accepted as API host and desired location', async () => {
+  upstream = async () => json({ placementScores: [score({ region: 'spaincentral' })] });
+  const response = await request('/api/placement-scores', input({ region: 'spaincentral', desiredLocations: ['spaincentral'] }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).placementScores[0].region, 'spaincentral');
+  assert.match(azureCalls[0].url, /\/locations\/spaincentral\/placementScores/);
+});
+
+test('well-formed but undiscovered regions are rejected before scoring', async () => {
+  const response = await request('/api/placement-scores', input({ region: 'notarealregion' }));
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /discovered Azure VM regions/);
+  assert.equal(azureCalls.length, 0);
+});
+
+test('configuration requires a subscription rather than offering static regions or sizes', async () => {
+  const response = await request('/api/config');
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(typeof body.error, 'string');
+  assert.equal(Object.hasOwn(body, 'regions'), false);
+  assert.equal(Object.hasOwn(body, 'skuFamilies'), false);
+  assert.equal(discoveryCalls.length, 0);
+});
+
+test('initial region comes from verified discovery, with a warning for an unavailable preference', async () => {
+  const previous = process.env.DEFAULT_REGION;
+  process.env.DEFAULT_REGION = 'notarealregion';
+  upstream = async () => json({ value: [] });
+  try {
+    const response = await request(catalogQuery().replace('&region=centralindia', ''));
+    const config = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(config.regions.includes(config.catalogRegion));
+    assert.ok(config.warnings.some(warning => /preferred default region/.test(warning)));
+  } finally {
+    process.env.DEFAULT_REGION = previous;
+  }
+});
+
+test('region discovery failure returns an error and is retried, never a fixed fallback', async () => {
+  const route = catalogQuery();
+  discoveryUpstream = async () => json({ error: 'Discovery unavailable' }, 503);
+  let response = await request(route);
+  assert.equal(response.status, 503);
+  assert.equal(Object.hasOwn(await response.json(), 'regions'), false);
+  assert.equal(azureCalls.length, 0);
+  discoveryUpstream = discoveryResponse;
+  upstream = async () => json({ value: [] });
+  response = await request(route);
+  assert.equal(response.status, 200);
+  assert.ok((await response.json()).regions.includes('spaincentral'));
+});
+
+for (const invalidResponse of [
+  {},
+  { resourceTypes: [] },
+  { resourceTypes: [{ resourceType: 'virtualMachines', locations: null }] }
+]) {
+  test(`invalid VM-provider discovery metadata fails closed: ${JSON.stringify(invalidResponse)}`, async () => {
+    discoveryUpstream = async call => call.url.includes('/locations?')
+      ? json({ value: locationRows }) : json(invalidResponse);
+    const response = await request(catalogQuery());
+    assert.equal(response.status, 502);
+    assert.equal(Object.hasOwn(await response.json(), 'skuFamilies'), false);
+    assert.equal(azureCalls.length, 0);
+  });
+}
+
+test('region discovery follows continuation pages and caches per subscription until expiry', async () => {
+  let clock = Date.now();
+  mock.method(Date, 'now', () => clock);
+  const route = catalogQuery();
+  const id = new URL(route, origin).searchParams.get('subscriptionId');
+  const nextLink = `https://management.azure.com/subscriptions/${id}/locations?page=2`;
+  discoveryUpstream = async call => {
+    if (!call.url.includes('/locations?')) return json(providerMetadata);
+    return call.url === nextLink
+      ? json({ value: locationRows.slice(2) })
+      : json({ value: locationRows.slice(0, 2), nextLink });
+  };
+  upstream = async () => json({ value: [] });
+  let response = await request(route);
+  assert.ok((await response.json()).regions.includes('spaincentral'));
+  assert.equal(discoveryCalls.length, 3);
+  await request(route.replace('centralindia', 'eastus'));
+  assert.equal(discoveryCalls.length, 3);
+  clock += 15 * 60 * 1000 + 1;
+  discoveryUpstream = async () => json({ error: 'Unavailable' }, 503);
+  response = await request(route);
+  assert.equal(response.status, 503);
+  assert.equal(Object.hasOwn(await response.json(), 'regions'), false);
+  discoveryUpstream = discoveryResponse;
+  response = await request(route);
+  assert.equal(response.status, 200);
 });

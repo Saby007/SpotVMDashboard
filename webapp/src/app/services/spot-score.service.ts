@@ -31,9 +31,9 @@ export class SpotScoreService {
     return this.http.get<Subscription[]>('/api/subscriptions');
   }
 
-  getConfig(subscriptionId?: string, region = 'centralindia'): Observable<DashboardConfig> {
-    const query = new URLSearchParams({ region });
-    if (subscriptionId) query.set('subscriptionId', subscriptionId);
+  getConfig(subscriptionId: string, region?: string): Observable<DashboardConfig> {
+    const query = new URLSearchParams({ subscriptionId });
+    if (region) query.set('region', region);
     return this.http.get<DashboardConfig>(`/api/config?${query}`);
   }
 
@@ -64,8 +64,8 @@ export class SpotScoreService {
     if (!subscriptionId || !region || skus.length === 0) {
       throw new Error('Select a subscription, region, and at least one VM size.');
     }
-    if (!Number.isInteger(desiredCount) || desiredCount < 1 || desiredCount > 10) {
-      throw new Error('Desired count must be an integer from 1 to 10.');
+    if (!Number.isSafeInteger(desiredCount) || desiredCount < 1) {
+      throw new Error('Desired count must be a positive whole number.');
     }
 
     const totalBatches = Math.ceil(skus.length / BATCH_SIZE);

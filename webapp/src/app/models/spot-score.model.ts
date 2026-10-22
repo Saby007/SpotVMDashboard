@@ -42,11 +42,13 @@ export interface ScoreResponse {
 
 export interface DashboardConfig {
   regions: string[];
+  regionsFetchedAt: string;
   skuFamilies: Record<string, string[]>;
   defaultDesiredCount: number;
-  catalogSource: 'azure' | 'static';
+  maxDesiredCount: number;
+  catalogSource: 'azure';
   catalogRegion: string;
-  catalogFetchedAt: string | null;
+  catalogFetchedAt: string;
   warnings: string[];
 }
 

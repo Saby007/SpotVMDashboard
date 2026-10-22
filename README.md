@@ -50,8 +50,8 @@ The app currently runs **without any user login**. All Azure calls are made **se
 - Spot **placement scores** (High / Medium / Low / Restricted) per SKU and zone
 - Real **eviction rates** (last 28 days) via Azure Resource Graph
 - Regional **Spot vCPU quota** (low-priority cores) usage
-- Subscription- and region-scoped **SKU discovery**, excluding known region-wide restrictions (a visibly unverified static fallback is used only if discovery fails)
-- Sortable score table + heatmap view, live batch progress, and 429 back-off handling
+- Azure-discovered **physical VM regions** and subscription/region-scoped **Spot SKU discovery**, excluding known region-wide restrictions; discovery failures stop scoring rather than offering an unverified static list
+- Risk/rank-aware sortable table + heatmap view, completed-batch progress, and 429 back-off handling
 
 ### Reading and validating results
 
@@ -61,9 +61,11 @@ The app currently runs **without any user login**. All Azure calls are made **se
 - **Quota** is a permitted resource allowance, not Azure's spare capacity. The table shows the placement API's quota sufficiency signal for the requested count: sufficient, insufficient, or unknown. A smaller request may fit when the requested count does not.
 - The separate **regional Spot vCPU pool** shows remaining allowance shared across Spot sizes and scale-set instances. Its percentage is not a per-SKU/family quota or deployment-success probability. A zero limit means zero remaining allowance, not 100%.
 - The **heatmap** has SKU rows and zone columns. Its 3/2/1/0 values are display rankings, not probabilities; only an explicit restricted score maps to 0. `?` means unknown/stale data and `–` means no returned result. Colours do not incorporate quota.
-- The host validates subscription GUIDs, configured regions, integer counts (1–10), up to five distinct SKU names, up to eight distinct locations, and boolean zone selection. Invalid values are rejected rather than silently clamped.
+- The host validates subscription GUIDs and discovers physical regions from Azure subscription metadata intersected with the Compute provider's VM-region support. All region inputs must match that verified discovery; there is no maintained region allowlist.
+- Desired counts use Azure's documented positive int32 range (1–2,147,483,647), not a ten-VM application cap. The integer bound is returned in configuration and drives input validation; it is not a quota or capacity allowance, and Azure remains authoritative for accepting the request. Counts request recommendations only; no VMs are created. Up to five distinct sizes, eight distinct locations, and boolean zone selection are validated. Invalid values are rejected rather than silently clamped.
 - Azure metric payloads and placement scope are validated server-side. Invalid upstream metrics return errors; absent quota flags remain unknown. Lookup failures and incomplete results have visible warnings. Resource Graph continuation pages are read rather than silently ignored.
-- SKU discovery is cached for 15 minutes per subscription and region. Zone-only restrictions keep the SKU in the catalogue because other zones may still be usable; consult the zonal placement results. An empty verified catalogue is not replaced with static sizes.
+- Region discovery is cached for 15 minutes per subscription; SKU discovery is cached per subscription/region. Failed or expired discovery is never replaced with a static or stale catalogue: show an error and retry, with scoring disabled. An empty verified catalogue remains empty. Zone-only restrictions keep the SKU listed because other zones may still be usable; consult the zonal results.
+- Eviction sorting follows numeric band boundaries; placement sorting follows heatmap ranks 0–3. Unknown values stay last in either direction. Progress counts batches that returned scores or a terminal error, not batches merely started; retries do not advance it.
 - Changing any selection cancels outstanding score requests and clears the old results. Cancelled or failed batches are marked incomplete. Snapshots at least 15 minutes old have an age warning, but even newer scores can change immediately. Retrieval timestamps are not the age of Azure's underlying data.
 
 The dashboard does not create or block VMs. Compare the same Spot/regular priority, subscription, size, region, zone, and count when investigating a successful deployment after a poor score. Azure performs the authoritative validation and allocation when the VM is deployed.
@@ -324,6 +326,7 @@ The package must contain `server.js`, the runtime `package.json`, and the `dist/
 | `AZURE_SUBSCRIPTIONS`           | JSON array of `{ id, name }` for multiple subscriptions (overrides the two above). |
 | `SCM_DO_BUILD_DURING_DEPLOYMENT`| `true` so App Service runs `npm install` (to fetch `express`) on deploy.|
 | `LOCAL_DEV`                     | `1`/`0` to force local (Azure CLI) vs managed-identity token source.    |
+| `DEFAULT_REGION`                | Preferred initial region (default `centralindia`), used only if Azure discovery includes it; otherwise a verified region is selected with a visible warning. |
 
 The host auto-detects the environment: outside App Service it uses the Azure CLI; inside App Service it uses the managed identity. You normally don't set `LOCAL_DEV`.
 

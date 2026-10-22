@@ -7,6 +7,9 @@ import { DashboardConfig, EvictionRate, SpotScore, Subscription, UserInfo, VmQuo
 import { DEV_MODE } from './auth.config';
 
 const SNAPSHOT_AGE_WARNING_MS = 15 * 60 * 1000;
+const EVICTION_RANK: Record<EvictionRate, number> = {
+  '0-5': 0, '5-10': 1, '10-15': 2, '15-20': 3, '20+': 4
+};
 
 @Component({
   selector: 'app-root',
@@ -25,7 +28,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private freshnessTimer: ReturnType<typeof setInterval> | null = null;
 
   selectedSubscription = '';
-  selectedRegion = 'centralindia';
+  selectedRegion = '';
   selectedFamilies: string[] = [];
   desiredCount = 5;
   selectedCategory = '';
@@ -100,16 +103,28 @@ export class AppComponent implements OnInit, OnDestroy {
     this.configWarnings = [];
     this.familyKeys = [];
     this.selectedFamilies = [];
-    this.configRequest = this.spotService.getConfig(this.selectedSubscription || undefined, this.selectedRegion)
+    if (!this.selectedSubscription) {
+      this.config = null;
+      this.configError = 'No Azure subscriptions are available to the host identity. Check permissions and retry.';
+      this.configLoading = false;
+      return;
+    }
+    this.configRequest = this.spotService.getConfig(this.selectedSubscription, this.selectedRegion || undefined)
       .pipe(takeUntil(this.destroy$)).subscribe({
         next: config => this.zone.run(() => {
-          if (config.catalogRegion !== this.selectedRegion) {
+          if (config.catalogSource !== 'azure' || !Number.isInteger(config.maxDesiredCount) || config.maxDesiredCount < 1) {
+            this.configError = 'Verified Azure discovery and valid count limits are required. Reload the dashboard and retry configuration.';
+            this.configLoading = false;
+            return;
+          }
+          if ((this.selectedRegion && config.catalogRegion !== this.selectedRegion) || !config.regions.includes(config.catalogRegion)) {
             this.configError = 'The SKU catalogue does not match the selected region. Retry configuration.';
             this.configLoading = false;
             return;
           }
           if (!this.config) this.desiredCount = config.defaultDesiredCount;
           this.config = config;
+          this.selectedRegion = config.catalogRegion;
           this.configWarnings = config.warnings;
           this.familyKeys = Object.keys(config.skuFamilies);
           if (!this.categories.includes(this.selectedCategory)) this.selectedCategory = this.categories[0] || '';
@@ -119,7 +134,7 @@ export class AppComponent implements OnInit, OnDestroy {
         }),
         error: (error: unknown) => this.zone.run(() => {
           console.error('Failed to load configuration', error);
-          this.configError = 'The VM catalogue could not be loaded. Retry configuration.';
+          this.configError = 'Live Azure region/SKU discovery could not be completed. No unverified sizes will be offered. Retry configuration or select another region.';
           this.configLoading = false;
         })
       });
@@ -159,6 +174,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   onSubscriptionChange(): void {
     this.resetResults();
+    this.selectedRegion = '';
     this.loadConfig();
   }
 
@@ -177,11 +193,12 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   get validDesiredCount(): boolean {
-    return Number.isInteger(this.desiredCount) && this.desiredCount >= 1 && this.desiredCount <= 10;
+    return Number.isSafeInteger(this.desiredCount) && this.desiredCount >= 1
+      && !!this.config && this.desiredCount <= this.config.maxDesiredCount;
   }
 
   get canFetch(): boolean {
-    return !!this.selectedSubscription && this.config?.catalogRegion === this.selectedRegion
+    return !!this.selectedSubscription && this.config?.catalogSource === 'azure' && this.config.catalogRegion === this.selectedRegion
       && this.selectedSkus.length > 0 && this.validDesiredCount && !this.loading && !this.configLoading && !this.configError;
   }
 
@@ -213,12 +230,12 @@ export class AppComponent implements OnInit, OnDestroy {
         break;
       case 'batch':
         this.progressBatch = event.batchIndex + 1;
-        this.progressPercent = Math.round((this.progressBatch / this.progressTotal) * 100);
         this.retryCountdown = 0;
         this.clearCountdown();
         this.progressStatus = `Batch ${this.progressBatch}/${this.progressTotal} - ${event.skus.join(', ')}`;
         break;
       case 'scores':
+        this.completeBatch(event.batchIndex);
         this.scoresReceived += event.scores.length;
         this.scores.push(...event.scores);
         if (!this.timestamp || event.timestamp < this.timestamp) this.timestamp = event.timestamp;
@@ -231,6 +248,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.startCountdown();
         break;
       case 'error':
+        this.completeBatch(event.batchIndex);
         this.errors.push({ batch: event.skus, status: event.status, message: event.message });
         this.progressStatus = `Batch ${event.batchIndex + 1} failed (${event.status})`;
         break;
@@ -260,6 +278,10 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private addWarning(message: string): void {
     if (!this.warnings.includes(message)) this.warnings.push(message);
+  }
+
+  private completeBatch(batchIndex: number): void {
+    this.progressPercent = this.progressTotal > 0 ? Math.round(((batchIndex + 1) / this.progressTotal) * 100) : 0;
   }
 
   private resetResults(): void {
@@ -330,6 +352,14 @@ export class AppComponent implements OnInit, OnDestroy {
     const column = this.sortColumn;
     if (!column) return this.scores;
     return [...this.scores].sort((a, b) => {
+      if (column === 'evictionRate' || column === 'score') {
+        const aRank = column === 'score' ? this.scoreNumeric(a.score) : a.evictionRate === null ? null : EVICTION_RANK[a.evictionRate];
+        const bRank = column === 'score' ? this.scoreNumeric(b.score) : b.evictionRate === null ? null : EVICTION_RANK[b.evictionRate];
+        const aKnown = typeof aRank === 'number';
+        const bKnown = typeof bRank === 'number';
+        if (!aKnown || !bKnown) return aKnown ? -1 : bKnown ? 1 : 0;
+        return this.sortAsc ? aRank - bRank : bRank - aRank;
+      }
       const comparison = String(a[column] ?? '').localeCompare(String(b[column] ?? ''));
       return this.sortAsc ? comparison : -comparison;
     });

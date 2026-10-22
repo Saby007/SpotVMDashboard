@@ -20,38 +20,13 @@ const LOCAL_DEV = process.env.LOCAL_DEV
 const ARM_RESOURCE = 'https://management.azure.com/';
 const SCORE_API_VERSION = '2025-06-05';
 const DEFAULT_DESIRED_COUNT = 5;
-const CATALOG_TTL_MS = 15 * 60 * 1000;
+const MAX_DESIRED_COUNT = 2 ** 31 - 1;
+const DISCOVERY_TTL_MS = 15 * 60 * 1000;
 const SUBSCRIPTION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REGION_PATTERN = /^[a-z][a-z0-9]*$/;
 const SKU_PATTERN = /^[a-z][a-z0-9_-]{0,127}$/i;
 const EVICTION_RATES = new Set(['0-5', '5-10', '10-15', '15-20', '20+']);
 const PLACEMENT_SCORES = new Set(['High', 'Medium', 'Low', 'RestrictedSkuNotAvailable', 'DataNotFoundOrStale']);
-const REGIONS = [
-  'centralindia', 'southindia', 'westindia',
-  'eastus', 'eastus2', 'westus', 'westus2', 'westus3',
-  'centralus', 'northcentralus', 'southcentralus',
-  'westeurope', 'northeurope', 'uksouth', 'ukwest',
-  'southeastasia', 'eastasia', 'japaneast', 'japanwest',
-  'australiaeast', 'australiasoutheast',
-  'canadacentral', 'canadaeast', 'brazilsouth',
-  'koreacentral', 'koreasouth', 'francecentral',
-  'germanywestcentral', 'norwayeast', 'switzerlandnorth',
-  'uaenorth', 'southafricanorth', 'swedencentral',
-  'qatarcentral', 'polandcentral', 'italynorth', 'israelcentral'
-];
-const STATIC_SKU_FAMILIES = {
-  'General Purpose - B': [
-    'Standard_B2s', 'Standard_B2ms', 'Standard_B4ms', 'Standard_B8ms',
-    'Standard_B12ms', 'Standard_B16ms', 'Standard_B20ms'
-  ],
-  'General Purpose - Dv5': [
-    'Standard_D2_v5', 'Standard_D4_v5', 'Standard_D8_v5', 'Standard_D16_v5',
-    'Standard_D32_v5', 'Standard_D48_v5', 'Standard_D64_v5', 'Standard_D96_v5'
-  ],
-  'General Purpose - Dsv5': [
-    'Standard_D2s_v5', 'Standard_D4s_v5', 'Standard_D8s_v5', 'Standard_D16s_v5',
-    'Standard_D32s_v5', 'Standard_D48s_v5', 'Standard_D64s_v5', 'Standard_D96s_v5'
-  ]
-};
 const VM_FAMILY_PREFIXES = ['NC', 'ND', 'NV', 'NP', 'NM', 'NG', 'HB', 'HC', 'HX', 'DC', 'EC', 'FX'];
 
 app.use(express.json({ limit: '1mb' }));
@@ -69,6 +44,7 @@ console.log(`[auth] Runtime identity mode: ${LOCAL_DEV ? 'Azure CLI' : 'Managed 
 
 let tokenCache = null;
 const skuCatalogCache = new Map();
+const regionDiscoveryCache = new Map();
 
 function apiError(message, status = 502) {
   return Object.assign(new Error(message), { status });
@@ -78,13 +54,31 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function requireScope(subscriptionId, region) {
+function requireSubscriptionId(subscriptionId) {
   if (typeof subscriptionId !== 'string' || !SUBSCRIPTION_ID_PATTERN.test(subscriptionId)) {
     throw apiError('subscriptionId must be a valid subscription GUID.', 400);
   }
-  if (typeof region !== 'string' || !REGIONS.includes(region)) {
-    throw apiError('region must be one of the configured Azure regions.', 400);
+}
+
+function requireRegionName(region) {
+  if (typeof region !== 'string' || !REGION_PATTERN.test(region)) {
+    throw apiError('region must be a valid lowercase Azure region name.', 400);
   }
+}
+
+async function requireDiscoveredRegions(subscriptionId, regions) {
+  const discovery = await fetchRegionDiscovery(subscriptionId);
+  const unknown = regions.filter(region => !discovery.regions.includes(region));
+  if (unknown.length) {
+    throw apiError(`Regions are not in this subscription's discovered Azure VM regions: ${[...new Set(unknown)].join(', ')}.`, 400);
+  }
+  return discovery;
+}
+
+async function requireScope(subscriptionId, region) {
+  requireSubscriptionId(subscriptionId);
+  requireRegionName(region);
+  await requireDiscoveredRegions(subscriptionId, [region]);
 }
 
 function requireArray(data, field, source) {
@@ -103,10 +97,11 @@ function sendApiError(res, route, err) {
 function placementInput(body) {
   if (!isRecord(body)) throw apiError('A JSON request object is required.', 400);
   const { subscriptionId, region } = body;
-  requireScope(subscriptionId, region);
+  requireSubscriptionId(subscriptionId);
+  requireRegionName(region);
   const desiredCount = body.desiredCount === undefined ? DEFAULT_DESIRED_COUNT : body.desiredCount;
-  if (!Number.isInteger(desiredCount) || desiredCount < 1 || desiredCount > 10) {
-    throw apiError('desiredCount must be an integer from 1 to 10.', 400);
+  if (!Number.isInteger(desiredCount) || desiredCount < 1 || desiredCount > MAX_DESIRED_COUNT) {
+    throw apiError(`desiredCount must be an integer from 1 to ${MAX_DESIRED_COUNT} (Azure int32 limit).`, 400);
   }
   if (!Array.isArray(body.desiredSizes) || body.desiredSizes.length < 1 || body.desiredSizes.length > 5
     || !body.desiredSizes.every(item => isRecord(item) && typeof item.sku === 'string' && SKU_PATTERN.test(item.sku))) {
@@ -118,9 +113,9 @@ function placementInput(body) {
   }
   const desiredLocations = body.desiredLocations === undefined ? [region] : body.desiredLocations;
   if (!Array.isArray(desiredLocations) || desiredLocations.length < 1 || desiredLocations.length > 8
-    || !desiredLocations.every(location => typeof location === 'string' && REGIONS.includes(location))
+    || !desiredLocations.every(location => typeof location === 'string' && REGION_PATTERN.test(location))
     || new Set(desiredLocations).size !== desiredLocations.length) {
-    throw apiError('desiredLocations must contain 1 to 8 distinct configured Azure regions.', 400);
+    throw apiError('desiredLocations must contain 1 to 8 distinct Azure region names.', 400);
   }
   if (body.availabilityZones !== undefined && typeof body.availabilityZones !== 'boolean') {
     throw apiError('availabilityZones must be a boolean.', 400);
@@ -316,27 +311,76 @@ async function listSubscriptions() {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function fetchAndCategorizeSkus(subscriptionId, region) {
-  const cacheKey = `${subscriptionId}:${region}`;
-  const cached = skuCatalogCache.get(cacheKey);
+async function cachedDiscovery(cache, key, load) {
+  const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  const entry = { promise: load(), expiresAt: Date.now() + DISCOVERY_TTL_MS };
+  cache.set(key, entry);
+  try {
+    const result = await entry.promise;
+    entry.expiresAt = Date.now() + DISCOVERY_TTL_MS;
+    return result;
+  } catch (err) {
+    if (cache.get(key) === entry) cache.delete(key);
+    throw err;
+  }
+}
 
-  const loader = (async () => {
-    const allSkus = [];
-    let url = `https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/skus?api-version=2021-07-01&$filter=${encodeURIComponent(`location eq '${region}'`)}`;
-    const visited = new Set();
-
-    while (url) {
-      if (visited.has(url)) throw apiError('Azure returned a repeated SKU catalogue page.');
-      visited.add(url);
-      const data = await armFetch(url);
-      allSkus.push(...requireArray(data, 'value', 'SKU catalogue'));
-      if (data.nextLink != null && (typeof data.nextLink !== 'string' || !data.nextLink.startsWith(ARM_RESOURCE))) {
-        throw apiError('Azure returned an invalid SKU catalogue nextLink.');
-      }
-      url = data.nextLink || null;
+async function armList(url, source) {
+  const items = [];
+  const visited = new Set();
+  while (url) {
+    if (visited.has(url)) throw apiError(`Azure returned a repeated ${source} page.`);
+    visited.add(url);
+    const data = await armFetch(url);
+    items.push(...requireArray(data, 'value', source));
+    if (data.nextLink != null && (typeof data.nextLink !== 'string' || !data.nextLink.startsWith(ARM_RESOURCE))) {
+      throw apiError(`Azure returned an invalid ${source} nextLink.`);
     }
+    url = data.nextLink || null;
+  }
+  return items;
+}
 
+async function fetchRegionDiscovery(subscriptionId) {
+  return cachedDiscovery(regionDiscoveryCache, subscriptionId.toLowerCase(), async () => {
+    const subscriptionPath = `${ARM_RESOURCE}subscriptions/${encodeURIComponent(subscriptionId)}`;
+    const [locations, provider] = await Promise.all([
+      armList(`${subscriptionPath}/locations?api-version=2022-12-01`, 'region discovery'),
+      armFetch(`${subscriptionPath}/providers/Microsoft.Compute?api-version=2021-04-01`)
+    ]);
+    const vmTypes = requireArray(provider, 'resourceTypes', 'Compute provider')
+      .filter(type => isRecord(type) && typeof type.resourceType === 'string' && type.resourceType.toLowerCase() === 'virtualmachines');
+    if (vmTypes.length !== 1 || !Array.isArray(vmTypes[0].locations)
+      || !vmTypes[0].locations.every(location => typeof location === 'string' && location.trim())) {
+      throw apiError('Azure returned invalid virtual-machine region support metadata.');
+    }
+    const supported = new Set(vmTypes[0].locations.map(location => location.trim().toLowerCase()));
+    const regions = new Set();
+    for (const location of locations) {
+      if (!isRecord(location) || typeof location.name !== 'string' || !REGION_PATTERN.test(location.name)
+        || !isRecord(location.metadata) || !['Physical', 'Logical'].includes(location.metadata.regionType)) {
+        throw apiError('Azure returned invalid subscription region metadata.');
+      }
+      if (location.metadata.regionType !== 'Physical') continue;
+      if (typeof location.displayName !== 'string' || !location.displayName.trim()) {
+        throw apiError('Azure returned invalid region display metadata.');
+      }
+      if (supported.has(location.name) || supported.has(location.displayName.trim().toLowerCase())) {
+        regions.add(location.name);
+      }
+    }
+    if (regions.size === 0) throw apiError('Azure returned no verified physical VM regions. Region discovery is unavailable.');
+    return { regions: [...regions].sort(), fetchedAt: new Date().toISOString() };
+  });
+}
+
+async function fetchAndCategorizeSkus(subscriptionId, region) {
+  return cachedDiscovery(skuCatalogCache, `${subscriptionId.toLowerCase()}:${region}`, async () => {
+    const allSkus = await armList(
+      `${ARM_RESOURCE}subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/skus?api-version=2021-07-01&$filter=${encodeURIComponent(`location eq '${region}'`)}`,
+      'SKU catalogue'
+    );
     const familyMap = new Map();
     for (const sku of allSkus) {
       if (!isRecord(sku) || typeof sku.resourceType !== 'string') throw apiError('Azure returned an invalid SKU catalogue entry.');
@@ -383,18 +427,7 @@ async function fetchAndCategorizeSkus(subscriptionId, region) {
       sorted[key] = result[key];
     }
     return { skuFamilies: sorted, catalogFetchedAt: new Date().toISOString() };
-  })();
-
-  const entry = { promise: loader, expiresAt: Date.now() + CATALOG_TTL_MS };
-  skuCatalogCache.set(cacheKey, entry);
-  try {
-    const result = await loader;
-    entry.expiresAt = Date.now() + CATALOG_TTL_MS;
-    return result;
-  } catch (err) {
-    if (skuCatalogCache.get(cacheKey) === entry) skuCatalogCache.delete(cacheKey);
-    throw err;
-  }
+  });
 }
 
 app.get('/api/me', async (_req, res) => {
@@ -434,36 +467,31 @@ app.get('/api/subscriptions', async (_req, res) => {
 app.get('/api/config', async (req, res) => {
   try {
     const subscriptionId = req.query.subscriptionId;
-    const region = req.query.region === undefined ? REGIONS[0] : req.query.region;
-    if (subscriptionId !== undefined) requireScope(subscriptionId, region);
-    else if (typeof region !== 'string' || !REGIONS.includes(region)) throw apiError('region must be one of the configured Azure regions.', 400);
-    let skuFamilies = STATIC_SKU_FAMILIES;
-    let catalogSource = 'static';
-    let catalogFetchedAt = null;
+    requireSubscriptionId(subscriptionId);
+    if (req.query.region !== undefined) requireRegionName(req.query.region);
+    const discovery = await fetchRegionDiscovery(subscriptionId);
+    const preferredRegion = (process.env.DEFAULT_REGION || 'centralindia').trim().toLowerCase();
+    const region = req.query.region ?? (discovery.regions.includes(preferredRegion) ? preferredRegion : discovery.regions[0]);
+    if (!discovery.regions.includes(region)) {
+      throw apiError('region must be one of this subscription\'s discovered Azure VM regions.', 400);
+    }
     const warnings = [];
-    if (subscriptionId) {
-      try {
-        const catalog = await fetchAndCategorizeSkus(subscriptionId, region);
-        skuFamilies = catalog.skuFamilies;
-        catalogFetchedAt = catalog.catalogFetchedAt;
-        catalogSource = 'azure';
-        if (Object.keys(skuFamilies).length === 0) {
-          warnings.push(`Azure returned no Spot-capable VM sizes without region-wide restrictions for this subscription in ${region}.`);
-        }
-      } catch (err) {
-        console.warn('[api] Falling back to static SKU families:', err.message);
-        warnings.push(`Live SKU discovery failed: ${err.message} Showing an unverified static list; regional support and subscription restrictions have not been checked.`);
-      }
-    } else {
-      warnings.push('No subscription selected. The static SKU list is unverified; support and restrictions have not been checked.');
+    if (req.query.region === undefined && region !== preferredRegion) {
+      warnings.push(`The preferred default region ${preferredRegion || '(empty)'} is not in Azure's discovered VM regions. Selected ${region} from the verified list.`);
+    }
+    const catalog = await fetchAndCategorizeSkus(subscriptionId, region);
+    if (Object.keys(catalog.skuFamilies).length === 0) {
+      warnings.push(`Azure returned no Spot-capable VM sizes without region-wide restrictions for this subscription in ${region}.`);
     }
     res.json({
-      regions: REGIONS,
-      skuFamilies,
+      regions: discovery.regions,
+      regionsFetchedAt: discovery.fetchedAt,
+      skuFamilies: catalog.skuFamilies,
       defaultDesiredCount: DEFAULT_DESIRED_COUNT,
-      catalogSource,
+      maxDesiredCount: MAX_DESIRED_COUNT,
+      catalogSource: 'azure',
       catalogRegion: region,
-      catalogFetchedAt,
+      catalogFetchedAt: catalog.catalogFetchedAt,
       warnings
     });
   } catch (err) {
@@ -474,7 +502,7 @@ app.get('/api/config', async (req, res) => {
 app.get('/api/eviction-rates', async (req, res) => {
   try {
     const { subscriptionId, region } = req.query;
-    requireScope(subscriptionId, region);
+    await requireScope(subscriptionId, region);
     const query = `SpotResources\n| where type =~ 'microsoft.compute/skuspotevictionrate/location'\n| where location =~ '${region}'\n| project skuName = tostring(sku.name), location, spotEvictionRate = tostring(properties.evictionRate)`;
     const rates = {};
     const seenTokens = new Set();
@@ -516,7 +544,7 @@ app.get('/api/eviction-rates', async (req, res) => {
 app.get('/api/vm-quota', async (req, res) => {
   try {
     const { subscriptionId, region } = req.query;
-    requireScope(subscriptionId, region);
+    await requireScope(subscriptionId, region);
     const data = await armFetch(`https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/locations/${encodeURIComponent(region)}/usages?api-version=2024-07-01`);
     const entries = requireArray(data, 'value', 'VM quota');
     const spotEntries = entries.filter(item => isRecord(item) && typeof item.name?.value === 'string' && item.name.value.toLowerCase() === 'lowprioritycores');
@@ -551,6 +579,7 @@ app.get('/api/vm-quota', async (req, res) => {
 app.post('/api/placement-scores', async (req, res) => {
   try {
     const input = placementInput(req.body);
+    await requireDiscoveredRegions(input.subscriptionId, [input.region, ...input.desiredLocations]);
     const { subscriptionId, region, ...payload } = input;
     const data = await armFetch(
       `https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/locations/${encodeURIComponent(region)}/placementScores/spot/generate?api-version=${SCORE_API_VERSION}`,
