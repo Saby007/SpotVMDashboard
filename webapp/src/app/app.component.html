@@ -3,7 +3,7 @@
   <header class="header">
     <div class="header-content">
       <h1>Spot VM Placement Scores</h1>
-      <span class="header-sub">Real-time availability scores from Azure</span>
+      <span class="header-sub">Azure Spot placement recommendations — not deployment guarantees</span>
     </div>
     <div class="header-auth">
       <ng-container *ngIf="devMode; else managedIdentityMode">
@@ -29,6 +29,10 @@
 
   <!-- Loading config -->
   <div *ngIf="configLoading" class="loading-bar">Loading configuration…</div>
+  <div *ngIf="configError" class="error-banner" role="alert">
+    {{ configError }}
+    <button class="btn-link" (click)="retrySetup()">Retry configuration</button>
+  </div>
 
   <!-- Controls -->
   <section *ngIf="config" class="controls">
@@ -44,7 +48,7 @@
 
       <div class="control-group">
         <label for="region">Region</label>
-        <select id="region" [(ngModel)]="selectedRegion">
+        <select id="region" [(ngModel)]="selectedRegion" (ngModelChange)="onRegionChange()">
           <option value="" disabled>Select region</option>
           <option *ngFor="let r of config.regions" [value]="r">{{ r }}</option>
         </select>
@@ -52,7 +56,8 @@
 
       <div class="control-group">
         <label for="count">Desired Count</label>
-        <input id="count" type="number" [(ngModel)]="desiredCount" min="1" max="10" style="width: 80px">
+        <input id="count" type="number" [(ngModel)]="desiredCount" (ngModelChange)="onDesiredCountChange()" min="1" max="10" step="1" [attr.aria-invalid]="!validDesiredCount" style="width: 80px">
+        <span *ngIf="!validDesiredCount" class="hint-error">Enter a whole number from 1 to 10.</span>
       </div>
 
       <div class="control-group control-action">
@@ -68,7 +73,7 @@
     <div class="filter-row">
       <div class="control-group">
         <label for="category">Category</label>
-        <select id="category" [(ngModel)]="selectedCategory" (ngModelChange)="onCategoryChange()">
+        <select id="category" [(ngModel)]="selectedCategory" (ngModelChange)="onCategoryChange()" [disabled]="configLoading">
           <option value="" disabled>Select category</option>
           <option *ngFor="let cat of categories" [value]="cat">{{ cat }}</option>
         </select>
@@ -76,7 +81,7 @@
 
       <div class="control-group">
         <label for="series">Instance Series</label>
-        <select id="series" [(ngModel)]="selectedSeries" (ngModelChange)="onSeriesChange()">
+        <select id="series" [(ngModel)]="selectedSeries" (ngModelChange)="onSeriesChange()" [disabled]="configLoading">
           <option value="" disabled>Select series</option>
           <option *ngFor="let s of seriesOptions" [value]="s">{{ s }}</option>
         </select>
@@ -87,15 +92,49 @@
       </div>
     </div>
 
+    <p class="catalog-note" *ngIf="!configLoading">
+      SKU catalogue: {{ config.catalogSource === 'azure' ? 'Azure, filtered by subscription and region-wide restrictions' : 'Unverified static fallback' }}
+      <span *ngIf="config.catalogFetchedAt"> · Retrieved {{ config.catalogFetchedAt | date:'short' }}</span>.
+      Listing a SKU does not guarantee Spot capacity; zone restrictions can still apply.
+    </p>
+    <details class="advisory-note">
+      <summary>How to read these results</summary>
+      <p>Spot VMs can be interrupted when Azure reclaims spare capacity or your maximum price is exceeded. Eviction history uses the last 28 trailing days for a SKU and region, not an individual zone or a guarantee of future uptime.</p>
+      <p>Quota is your permitted vCPU allowance, not physical capacity. Each score applies only to the requested Spot VM count, size, region, zone, subscription, and time. A low score does not prevent deployment, and a high score does not reserve capacity. Regular VMs use different capacity and quota rules. Azure validates the actual deployment.</p>
+    </details>
   </section>
+
+  <div *ngIf="configWarnings.length > 0" class="warning-banner" role="status">
+    <div *ngFor="let warning of configWarnings">{{ warning }}</div>
+  </div>
+  <div *ngIf="warnings.length > 0" class="warning-banner" role="status">
+    <strong>Data quality / completeness:</strong>
+    <div *ngFor="let warning of warnings">{{ warning }}</div>
+  </div>
+  <div *ngIf="isSnapshotOld" class="warning-banner" role="alert">
+    This snapshot is at least 15 minutes old. Refresh scores and quota before deploying; capacity can change immediately, even for newer results.
+  </div>
 
   <!-- Errors -->
   <div *ngIf="errors.length > 0 && !loading" class="error-banner">
-    <strong>⚠ {{ errors.length }} batch(es) had errors:</strong>
+    <strong>⚠ {{ errors.length }} request(s) had errors:</strong>
     <div *ngFor="let e of errors" class="error-item">
       Status {{ e.status }}: {{ e.message }}
     </div>
   </div>
+
+  <section *ngIf="resultContext && !loading" class="snapshot-context">
+    <strong>Spot snapshot:</strong> {{ resultContext.subscriptionName }} · {{ resultContext.region }} · {{ resultContext.desiredCount }} VM(s) of each size.
+    <p>Refresh before deploying. These recommendations do not reserve capacity or block VM creation.</p>
+    <div class="regional-quota" *ngIf="vmQuota; else quotaUnknown">
+      <strong>Regional Spot vCPU pool:</strong>
+      {{ vmQuota.remaining }} / {{ vmQuota.limit }} vCPUs remaining ({{ vmQuota.percentRemaining }}%); {{ vmQuota.currentValue }} used.
+      <p>Shared regional allowance across Spot sizes and scale sets — not a per-SKU balance or available Azure capacity. Retrieved {{ vmQuota.fetchedAt | date:'medium' }}.</p>
+    </div>
+    <ng-template #quotaUnknown>
+      <p class="quota-unknown">Regional Spot vCPU pool: Unknown. No quota balance has been verified.</p>
+    </ng-template>
+  </section>
 
   <!-- Loading animation -->
   <div *ngIf="loading" class="loading-overlay">
@@ -165,13 +204,21 @@
       </div>
       <div class="tile tile-quota" *ngIf="noQuotaCount > 0">
         <span class="tile-value">{{ noQuotaCount }}</span>
-        <span class="tile-label">No Quota</span>
+        <span class="tile-label">Insufficient for count</span>
+      </div>
+      <div class="tile tile-unknown" *ngIf="unknownCount > 0">
+        <span class="tile-value">{{ unknownCount }}</span>
+        <span class="tile-label">Unknown score</span>
+      </div>
+      <div class="tile tile-unknown" *ngIf="unknownQuotaCount > 0">
+        <span class="tile-value">{{ unknownQuotaCount }}</span>
+        <span class="tile-label">Quota unknown</span>
       </div>
     </div>
 
     <!-- Timestamp -->
-    <div class="timestamp">
-      Fetched: {{ timestamp | date:'medium' }}
+    <div class="timestamp" *ngIf="timestamp">
+      First placement response retrieved: {{ timestamp | date:'medium' }}. Retrieval time is not the age of Azure's underlying data.
     </div>
 
     <!-- Tab bar -->
@@ -199,15 +246,15 @@
             </th>
             <th (click)="sortBy('score')" class="sortable has-tooltip">
               <span class="th-label">Score<span *ngIf="sortColumn === 'score'" class="sort-caret">{{ sortAsc ? '▲' : '▼' }}</span></span>
-              <span class="th-tooltip" [innerHTML]="'Azure Spot Placement Score: <b>High</b> = strong availability, <b>Medium</b> = some availability, <b>Low</b> = limited availability, <b>Restricted</b> = SKU not available in this region. Reflects real-time Azure capacity — not a guarantee.'"></span>
+              <span class="th-tooltip">High / Medium / Low estimate the likelihood of allocating the requested Spot VM count. Low is not impossible. Restricted means Azure reports a subscription/SKU restriction for this scope. Missing, stale, or unrecognized data is Unknown, not Restricted. No score guarantees allocation or continued availability.</span>
             </th>
             <th (click)="sortBy('evictionRate')" class="sortable has-tooltip">
               <span class="th-label">Eviction Rate<span *ngIf="sortColumn === 'evictionRate'" class="sort-caret">{{ sortAsc ? '▲' : '▼' }}</span></span>
-              <span class="th-tooltip" [innerHTML]="'Historical eviction rate over the last 28 days for Spot VMs of this SKU. Lower is better. <b>0-5%</b> = very stable, <b>20%+</b> = frequent evictions — plan workloads accordingly.'"></span>
+              <span class="th-tooltip">Historical eviction-risk band from the last 28 trailing days for this SKU and region, shared across zone rows. Lower is better, but not a guarantee of uptime. Unknown means no verified history, not zero risk.</span>
             </th>
             <th class="has-tooltip th-quota-col">
-              <span class="th-label">Quota</span>
-              <span class="th-tooltip th-tooltip-right">Spot quota signal for this SKU family in this region. <b>✓ nn%</b> = quota allocated and shows remaining capacity from the regional Spot vCPU pool (lowPriorityCores). <b>✗ Unavailable (0%)</b> = no quota for this family. Request a quota increase via Azure Portal → Quotas.</span>
+              <span class="th-label">Requested Spot quota</span>
+              <span class="th-tooltip th-tooltip-right">Azure's quota sufficiency signal for the requested VM count, not a per-family percentage. Insufficient for the requested count does not mean zero quota; a smaller request may fit. Unknown means Azure did not return a valid signal. The separate regional vCPU balance is an allowance, not physical capacity.</span>
             </th>
           </tr>
         </thead>
@@ -217,18 +264,14 @@
             <td>{{ s.region }}</td>
             <td>{{ s.availabilityZone || 'N/A' }}</td>
             <td>
-              <span class="score-badge" [ngClass]="scoreClass(s.score)">{{ s.score }}</span>
+              <span class="score-badge" [ngClass]="scoreClass(s.score)" [title]="s.scoreDetail || scoreLabel(s.score)">{{ scoreLabel(s.score) }}</span>
             </td>
             <td>
               <span class="eviction-badge" [ngClass]="evictionClass(s.evictionRate)">{{ evictionRate(s.evictionRate) }}</span>
             </td>
             <td>
-              <span [class.quota-yes]="s.isQuotaAvailable" [class.quota-no]="!s.isQuotaAvailable">
-                <ng-container *ngIf="s.isQuotaAvailable; else unavailable">
-                  ✓ <ng-container *ngIf="vmQuota; else availableNoPct">{{ vmQuota.percentRemaining }}%</ng-container>
-                  <ng-template #availableNoPct>Available</ng-template>
-                </ng-container>
-                <ng-template #unavailable>✗ Unavailable (0%)</ng-template>
+              <span [class.quota-yes]="s.isQuotaAvailable === true" [class.quota-no]="s.isQuotaAvailable === false" [class.quota-unknown]="s.isQuotaAvailable === null">
+                {{ quotaLabel(s.isQuotaAvailable) }}
               </span>
             </td>
           </tr>
@@ -243,13 +286,16 @@
         <span class="legend-item"><span class="legend-dot score-medium"></span> Medium (2)</span>
         <span class="legend-item"><span class="legend-dot score-low"></span> Low (1)</span>
         <span class="legend-item"><span class="legend-dot score-restricted"></span> Restricted (0)</span>
+        <span class="legend-item"><span class="legend-dot score-unknown"></span> Unknown / stale (?)</span>
+        <span class="legend-item">No result (–)</span>
       </div>
+      <p class="heatmap-note">Rows are VM sizes; columns are zones. Numbers are rankings, not percentages or VM counts. Colours show placement likelihood only, not quota or eviction risk. Hover for the separate quota signal and regional eviction history.</p>
       <div class="heatmap-scroll">
         <table class="heatmap-table">
           <thead>
             <tr>
               <th class="sticky-col">SKU</th>
-              <th *ngFor="let zone of heatmapZones">Zone {{ zone }}</th>
+              <th *ngFor="let zone of heatmapZones">{{ zone === 'Regional' ? 'Regional / no zone' : 'Zone ' + zone }}</th>
             </tr>
           </thead>
           <tbody>
@@ -258,7 +304,7 @@
               <td *ngFor="let zone of heatmapZones"
                   class="heatmap-cell"
                   [ngClass]="getHeatmapScore(sku, zone) ? scoreClass(getHeatmapScore(sku, zone)!.score) : 'score-empty'"
-                  [title]="(getHeatmapScore(sku, zone)?.score || 'No data') + ' — Eviction: ' + evictionRate(getHeatmapScore(sku, zone)?.evictionRate || '')">
+                  [title]="heatmapTooltip(sku, zone)">
                 {{ getHeatmapScore(sku, zone) ? scoreNumeric(getHeatmapScore(sku, zone)!.score) : '-' }}
               </td>
             </tr>

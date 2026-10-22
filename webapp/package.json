@@ -7,6 +7,7 @@
     "ng": "ng",
     "start": "node server.js",
     "build": "ng build",
+    "test": "node --test",
     "dev:frontend": "ng serve --proxy-config proxy.conf.json",
     "dev:backend": "node server.js",
     "postinstall": "npm run build"

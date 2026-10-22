@@ -1,163 +1,42 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, from, of } from 'rxjs';
-import { DashboardConfig, QuotaInfo, Subscription, UserInfo } from '../models/spot-score.model';
-export interface StreamEvent {
-  type: 'start' | 'batch' | 'scores' | 'retry' | 'error' | 'done' | 'fatal' | 'quota' | 'vmQuota';
-  totalBatches?: number;
-  totalSkus?: number;
-  batchIndex?: number;
-  skus?: string[];
-  count?: number;
-  scores?: any[];
-  attempt?: number;
-  maxRetries?: number;
-  delaySec?: number;
-  status?: number;
-  message?: string;
-  timestamp?: string;
-  // quota event fields
-  apiName?: string;
-  used?: number;
-  max?: number;
-  remaining?: number;
-  percentRemaining?: number;
-  resetsInSec?: number;
-  // vmQuota event fields
-  region?: string;
-  currentValue?: number;
-  limit?: number;
-  percentUsed?: number;
-  unit?: string;
-  label?: string;
-}
+import { Observable, from } from 'rxjs';
+import { DashboardConfig, EvictionRatesResponse, PlacementScoreResponse, SpotScore, Subscription, UserInfo, VmQuotaInfo } from '../models/spot-score.model';
 
-// ----- Static config (moved from server.js) -----
-const REGIONS = [
-  'centralindia', 'southindia', 'westindia',
-  'eastus', 'eastus2', 'westus', 'westus2', 'westus3',
-  'centralus', 'northcentralus', 'southcentralus',
-  'westeurope', 'northeurope', 'uksouth', 'ukwest',
-  'southeastasia', 'eastasia', 'japaneast', 'japanwest',
-  'australiaeast', 'australiasoutheast',
-  'canadacentral', 'canadaeast', 'brazilsouth',
-  'koreacentral', 'koreasouth', 'francecentral',
-  'germanywestcentral', 'norwayeast', 'switzerlandnorth',
-  'uaenorth', 'southafricanorth', 'swedencentral',
-  'qatarcentral', 'polandcentral', 'italynorth', 'israelcentral'
-];
+export type StreamEvent =
+  | { type: 'start'; totalBatches: number; totalSkus: number }
+  | { type: 'batch'; batchIndex: number; totalBatches: number; skus: string[] }
+  | { type: 'scores'; batchIndex: number; scores: SpotScore[]; timestamp: string }
+  | { type: 'retry'; attempt: number; maxRetries: number; delaySec: number }
+  | { type: 'error'; batchIndex: number; status: number; message: string; skus: string[] }
+  | { type: 'done' }
+  | { type: 'fatal' | 'warning'; message: string }
+  | { type: 'vmQuota'; quota: VmQuotaInfo };
 
-const STATIC_SKU_FAMILIES: Record<string, string[]> = {
-  'General Purpose - B': [
-    'Standard_B2s', 'Standard_B2ms', 'Standard_B4ms', 'Standard_B8ms',
-    'Standard_B12ms', 'Standard_B16ms', 'Standard_B20ms'
-  ],
-  'General Purpose - Dv5': [
-    'Standard_D2_v5', 'Standard_D4_v5', 'Standard_D8_v5', 'Standard_D16_v5',
-    'Standard_D32_v5', 'Standard_D48_v5', 'Standard_D64_v5', 'Standard_D96_v5'
-  ],
-  'General Purpose - Dsv5': [
-    'Standard_D2s_v5', 'Standard_D4s_v5', 'Standard_D8s_v5', 'Standard_D16s_v5',
-    'Standard_D32s_v5', 'Standard_D48s_v5', 'Standard_D64s_v5', 'Standard_D96s_v5'
-  ]
-};
-
-const SCORE_API_VERSION = '2025-06-05';
 const BATCH_SIZE = 5;
-const DEFAULT_DESIRED_COUNT = 5;
-const SPOT_API_HOURLY_QUOTA = 100;
-const QUOTA_WINDOW_MS = 60 * 60 * 1000;
 
-const VM_FAMILY_PREFIXES = ['NC', 'ND', 'NV', 'NP', 'NM', 'NG', 'HB', 'HC', 'HX', 'DC', 'EC', 'FX'];
-
-function parseFamilyCode(familyCode: string): { category: string; series: string } {
-  let raw = familyCode
-    .replace(/^standard/i, '')
-    .replace(/Family$/i, '')
-    .replace(/Promo$/i, '');
-  if (!raw) return { category: 'General purpose', series: 'Other-series' };
-
-  const upper = raw.toUpperCase();
-  let category: string;
-  if (upper.startsWith('N')) category = 'GPU';
-  else if (upper.startsWith('H')) category = 'High performance compute';
-  else if (upper.startsWith('L')) category = 'Storage optimized';
-  else if (upper.startsWith('M')) category = 'Memory optimized';
-  else if (upper.startsWith('E')) category = 'Memory optimized';
-  else if (upper.startsWith('F')) category = 'Compute optimized';
-  else category = 'General purpose';
-
-  let prefixLen = 1;
-  for (const p of VM_FAMILY_PREFIXES) {
-    if (upper.startsWith(p)) { prefixLen = p.length; break; }
-  }
-  const prefix = raw.substring(0, prefixLen).toUpperCase();
-  const rest = raw.substring(prefixLen).toLowerCase();
-  return { category, series: prefix + rest + '-series' };
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
-
-interface QuotaEntry { count: number; windowStartMs: number; }
 
 @Injectable({ providedIn: 'root' })
 export class SpotScoreService {
-
-  // Per-subscription rolling-window counter (browser-local; mirrors the old server-side tracker).
-  private quotaTracker = new Map<string, QuotaEntry>();
-
   constructor(private http: HttpClient) {}
 
-  // ---- User / hosting identity info ----
   getMe(): Observable<UserInfo> {
-    return from(
-      fetch('/api/me')
-        .then(async r => {
-          if (!r.ok) throw new Error(`/api/me ${r.status}`);
-          const d = await r.json();
-          return { oid: d.oid || '', name: d.name || '', upn: d.upn || '' } as UserInfo;
-        })
-        .catch(() => ({ oid: '', name: 'App Service identity', upn: '' } as UserInfo))
-    );
+    return from(this.fetchJson<UserInfo>('/api/me'));
   }
 
-  // ---- Subscriptions exposed by the server-side Azure identity ----
   getSubscriptions(): Observable<Subscription[]> {
     return this.http.get<Subscription[]>('/api/subscriptions');
   }
 
-  // ---- Dashboard config served by the Node host ----
-  getConfig(subscriptionId?: string): Observable<DashboardConfig> {
-    const query = subscriptionId ? `?subscriptionId=${encodeURIComponent(subscriptionId)}` : '';
-    return this.http.get<DashboardConfig>(`/api/config${query}`);
+  getConfig(subscriptionId?: string, region = 'centralindia'): Observable<DashboardConfig> {
+    const query = new URLSearchParams({ region });
+    if (subscriptionId) query.set('subscriptionId', subscriptionId);
+    return this.http.get<DashboardConfig>(`/api/config?${query}`);
   }
 
-  // ---- Local quota tracker (rolling 1-hour window per subscription) ----
-  getQuota(subscriptionId: string): Observable<QuotaInfo> {
-    return of(this.quotaSnapshot(subscriptionId));
-  }
-
-  private quotaSnapshot(subscriptionId: string): QuotaInfo {
-    const now = Date.now();
-    let entry = this.quotaTracker.get(subscriptionId);
-    if (!entry || (now - entry.windowStartMs) >= QUOTA_WINDOW_MS) {
-      entry = { count: 0, windowStartMs: now };
-      this.quotaTracker.set(subscriptionId, entry);
-    }
-    const used = entry.count;
-    const max = SPOT_API_HOURLY_QUOTA;
-    const remaining = Math.max(0, max - used);
-    const percentRemaining = Math.max(0, Math.min(100, Math.round((remaining / max) * 100)));
-    const resetsInSec = Math.max(0, Math.ceil((entry.windowStartMs + QUOTA_WINDOW_MS - now) / 1000));
-    return { apiName: 'Spot Placement Score API', used, max, remaining, percentRemaining, resetsInSec };
-  }
-
-  private recordApiCall(subscriptionId: string): QuotaInfo {
-    this.quotaSnapshot(subscriptionId); // roll window if stale
-    const entry = this.quotaTracker.get(subscriptionId)!;
-    entry.count += 1;
-    return this.quotaSnapshot(subscriptionId);
-  }
-
-  // ---- Streaming scores via the Node host ----
   streamScores(
     subscriptionId: string,
     region: string,
@@ -167,9 +46,9 @@ export class SpotScoreService {
   ): AbortController {
     const controller = new AbortController();
     this.runScoreLoop(subscriptionId, region, skus, desiredCount, onEvent, controller.signal)
-      .catch(err => {
-        if (err?.name === 'AbortError') return;
-        onEvent({ type: 'fatal', message: err?.message || 'Score fetch failed' });
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        onEvent({ type: 'fatal', message: errorMessage(error) });
       });
     return controller;
   }
@@ -182,139 +61,144 @@ export class SpotScoreService {
     onEvent: (event: StreamEvent) => void,
     signal: AbortSignal
   ): Promise<void> {
-    if (!REGIONS.includes(region)) {
-      onEvent({ type: 'fatal', message: 'Region not in allowed list' });
-      return;
+    if (!subscriptionId || !region || skus.length === 0) {
+      throw new Error('Select a subscription, region, and at least one VM size.');
+    }
+    if (!Number.isInteger(desiredCount) || desiredCount < 1 || desiredCount > 10) {
+      throw new Error('Desired count must be an integer from 1 to 10.');
     }
 
-    const count = Math.min(Math.max(desiredCount || DEFAULT_DESIRED_COUNT, 1), 10);
     const totalBatches = Math.ceil(skus.length / BATCH_SIZE);
-    const MAX_RETRIES = 3;
-    const BASE_DELAY_MS = 30000;
-
-    const evictionMap = await this.fetchEvictionRates(subscriptionId, region, signal);
-
+    const maxRetries = 3;
     onEvent({ type: 'start', totalBatches, totalSkus: skus.length });
-    onEvent({ type: 'quota', ...this.quotaSnapshot(subscriptionId) });
-
-    const vmQuota = await this.fetchSpotVmQuota(subscriptionId, region, signal);
-    if (vmQuota) onEvent({ type: 'vmQuota', ...vmQuota });
+    const evictionHistory = await this.fetchEvictionRates(subscriptionId, region, signal, onEvent);
+    const vmQuota = await this.fetchSpotVmQuota(subscriptionId, region, signal, onEvent);
+    if (signal.aborted) return;
+    if (vmQuota) onEvent({ type: 'vmQuota', quota: vmQuota });
+    if (evictionHistory) {
+      const missing = skus.filter(sku => !evictionHistory.rates[sku.toLowerCase()]);
+      if (missing.length) onEvent({ type: 'warning', message: `Eviction history is unknown for ${missing.length} selected SKU(s): ${missing.join(', ')}. Missing data is not zero risk.` });
+    }
 
     for (let i = 0; i < skus.length; i += BATCH_SIZE) {
       if (signal.aborted) return;
-
       const batchIndex = Math.floor(i / BATCH_SIZE);
       const batch = skus.slice(i, i + BATCH_SIZE);
-
       onEvent({ type: 'batch', batchIndex, totalBatches, skus: batch });
-
       const payload = {
         subscriptionId,
         region,
         availabilityZones: true,
         desiredLocations: [region],
-        desiredCount: count,
+        desiredCount,
         desiredSizes: batch.map(sku => ({ sku }))
       };
 
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        if (signal.aborted) return;
-
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const response = await fetch('/api/placement-scores', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
           signal
         });
-
+        if (signal.aborted) return;
         if (response.ok) {
-          const data = await response.json();
-          const scores = (data.placementScores || []).map((s: any) => ({
-            ...s,
-            evictionRate: evictionMap[(s.sku || '').toLowerCase()] || 'N/A'
+          const data: PlacementScoreResponse = await response.json();
+          const scores = data.placementScores.map(score => ({
+            ...score,
+            evictionRate: evictionHistory?.rates[score.sku.toLowerCase()] ?? null
           }));
-          onEvent({ type: 'scores', batchIndex, count: scores.length, scores });
-          onEvent({ type: 'quota', ...this.recordApiCall(subscriptionId) });
-          break;
-        } else if (response.status === 429) {
-          let waitSec = 0;
-          const retryAfter = response.headers.get('Retry-After');
-          if (retryAfter) {
-            waitSec = parseInt(retryAfter, 10);
-          } else {
-            const bodyText = await response.text();
-            const match = bodyText.match(/(\d+)\s*seconds/);
-            waitSec = match ? parseInt(match[1], 10) : (BASE_DELAY_MS * (attempt + 1)) / 1000;
+          for (const message of data.warnings) onEvent({ type: 'warning', message });
+          if (vmQuota?.remaining === 0 && scores.some(score => score.isQuotaAvailable === true)) {
+            onEvent({ type: 'warning', message: 'Quota signals disagree: the regional pool has no remaining vCPUs, but the placement API reports sufficient quota. Refresh and verify quota in Azure before deploying.' });
           }
-
-          if (waitSec > 300) {
-            onEvent({ type: 'error', batchIndex, status: 429, message: `Rate limit reached — try again in ${Math.ceil(waitSec / 60)} minutes`, skus: batch });
-            onEvent({ type: 'done', timestamp: new Date().toISOString() });
-            return;
-          }
-
-          if (attempt < MAX_RETRIES) {
-            onEvent({ type: 'retry', batchIndex, attempt: attempt + 1, maxRetries: MAX_RETRIES, delaySec: waitSec, skus: batch });
-            await this.sleep(waitSec * 1000, signal);
-          } else {
-            onEvent({ type: 'error', batchIndex, status: 429, message: 'Rate limited after all retries', skus: batch });
-          }
-        } else {
-          const text = await response.text();
-          onEvent({ type: 'error', batchIndex, status: response.status, message: text, skus: batch });
+          onEvent({ type: 'scores', batchIndex, scores, timestamp: data.fetchedAt });
           break;
         }
-      }
 
-      if (i + BATCH_SIZE < skus.length) {
-        await this.sleep(3000, signal);
+        const message = await this.responseError(response);
+        if (response.status !== 429) {
+          onEvent({ type: 'error', batchIndex, status: response.status, message, skus: batch });
+          break;
+        }
+        const retryAfter = response.headers.get('Retry-After');
+        let waitSec = retryAfter && /^\d+(\.\d+)?$/.test(retryAfter)
+          ? Math.ceil(Number(retryAfter))
+          : retryAfter ? Math.ceil((Date.parse(retryAfter) - Date.now()) / 1000) : NaN;
+        if (!Number.isFinite(waitSec) || waitSec < 0) {
+          const match = message.match(/(\d+)\s*seconds/);
+          waitSec = match ? Number(match[1]) : 30 * (attempt + 1);
+        }
+        if (waitSec > 300 || attempt === maxRetries) {
+          onEvent({ type: 'error', batchIndex, status: 429, message: waitSec > 300 ? `Rate limit reached. Try again in ${Math.ceil(waitSec / 60)} minutes.` : 'Rate limited after all retries.', skus: batch });
+          if (waitSec > 300) {
+            onEvent({ type: 'done' });
+            return;
+          }
+        } else {
+          onEvent({ type: 'retry', attempt: attempt + 1, maxRetries, delaySec: waitSec });
+          await this.sleep(waitSec * 1000, signal);
+        }
       }
+      if (i + BATCH_SIZE < skus.length) await this.sleep(3000, signal);
     }
-
-    onEvent({ type: 'done', timestamp: new Date().toISOString() });
+    if (!signal.aborted) onEvent({ type: 'done' });
   }
 
-  private async fetchEvictionRates(subscriptionId: string, region: string, signal: AbortSignal): Promise<Record<string, string>> {
+  private async fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(await this.responseError(response));
+    return response.json();
+  }
+
+  private async responseError(response: Response): Promise<string> {
+    const text = await response.text();
+    let detail = text;
     try {
-      const url = `/api/eviction-rates?subscriptionId=${encodeURIComponent(subscriptionId)}&region=${encodeURIComponent(region)}`;
-      const resp = await fetch(url, { signal });
-      if (!resp.ok) {
-        console.warn(`Eviction rate query failed: ${resp.status}`);
-        return {};
-      }
-      return await resp.json();
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') console.warn('Eviction rate fetch error:', err?.message || err);
-      return {};
+      const body: unknown = JSON.parse(text);
+      if (body !== null && typeof body === 'object' && 'error' in body && typeof body.error === 'string') detail = body.error;
+    } catch {
+      // ARM can return plain-text error details.
+    }
+    return `HTTP ${response.status}: ${detail || response.statusText}`;
+  }
+
+  private async fetchEvictionRates(subscriptionId: string, region: string, signal: AbortSignal, onEvent: (event: StreamEvent) => void): Promise<EvictionRatesResponse | null> {
+    try {
+      return await this.fetchJson<EvictionRatesResponse>(`/api/eviction-rates?subscriptionId=${encodeURIComponent(subscriptionId)}&region=${encodeURIComponent(region)}`, signal);
+    } catch (error: unknown) {
+      if (signal.aborted) throw error;
+      const message = `Eviction history could not be loaded and is shown as unknown. ${errorMessage(error)}`;
+      console.warn(message);
+      onEvent({ type: 'warning', message });
+      return null;
     }
   }
 
-  private async fetchSpotVmQuota(subId: string, region: string, signal: AbortSignal): Promise<any | null> {
+  private async fetchSpotVmQuota(subscriptionId: string, region: string, signal: AbortSignal, onEvent: (event: StreamEvent) => void): Promise<VmQuotaInfo | null> {
     try {
-      const url = `/api/vm-quota?subscriptionId=${encodeURIComponent(subId)}&region=${encodeURIComponent(region)}`;
-      const resp = await fetch(url, { signal });
-      if (!resp.ok) return null;
-      return await resp.json();
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') console.warn('Spot VM quota lookup error:', err?.message || err);
+      return await this.fetchJson<VmQuotaInfo>(`/api/vm-quota?subscriptionId=${encodeURIComponent(subscriptionId)}&region=${encodeURIComponent(region)}`, signal);
+    } catch (error: unknown) {
+      if (signal.aborted) throw error;
+      const message = `Regional Spot vCPU quota could not be loaded and is unknown. ${errorMessage(error)}`;
+      console.warn(message);
+      onEvent({ type: 'warning', message });
       return null;
     }
   }
 
   private sleep(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      const timer = setTimeout(() => {
         signal.removeEventListener('abort', onAbort);
         resolve();
       }, ms);
-      const onAbort = () => {
-        clearTimeout(t);
-        const err = new Error('Aborted');
-        (err as any).name = 'AbortError';
-        reject(err);
-      };
-      if (signal.aborted) { onAbort(); return; }
-      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 }

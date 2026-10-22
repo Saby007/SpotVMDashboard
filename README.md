@@ -1,6 +1,6 @@
 # Spot VM Placement Score Dashboard
 
-An Angular 21 + Node/Express dashboard that shows **real-time Azure Spot VM placement scores**, eviction rates, and Spot quota for the VM sizes and regions you choose.
+An Angular + Node/Express dashboard that shows **Azure Spot VM placement recommendations**, historical eviction-risk bands, and Spot quota for the VM sizes and regions you choose. These are snapshots, not capacity reservations or deployment guarantees.
 
 The app currently runs **without any user login**. All Azure calls are made **server-side** by the Node host:
 
@@ -50,8 +50,25 @@ The app currently runs **without any user login**. All Azure calls are made **se
 - Spot **placement scores** (High / Medium / Low / Restricted) per SKU and zone
 - Real **eviction rates** (last 28 days) via Azure Resource Graph
 - Regional **Spot vCPU quota** (low-priority cores) usage
-- Dynamic **SKU discovery** (falls back to a static list if the catalog can't be read)
+- Subscription- and region-scoped **SKU discovery**, excluding known region-wide restrictions (a visibly unverified static fallback is used only if discovery fails)
 - Sortable score table + heatmap view, live batch progress, and 429 back-off handling
+
+### Reading and validating results
+
+- **Eviction** is interruption of a Spot VM when Azure reclaims capacity or the configured maximum price is exceeded. The VM is deallocated or deleted according to its eviction policy.
+- **Eviction history** comes from Azure Resource Graph's trailing 28-day SKU/region data. It is not zone-specific, a promised lifetime, or your application's measured failure rate. Unknown history is not zero risk.
+- **Placement scores** estimate allocation likelihood for the exact subscription, Spot VM count, size, region, zone, and query time. High/Medium/Low do not guarantee deployment or continued availability. Restricted is distinct from missing, stale, or unrecognized data.
+- **Quota** is a permitted resource allowance, not Azure's spare capacity. The table shows the placement API's quota sufficiency signal for the requested count: sufficient, insufficient, or unknown. A smaller request may fit when the requested count does not.
+- The separate **regional Spot vCPU pool** shows remaining allowance shared across Spot sizes and scale-set instances. Its percentage is not a per-SKU/family quota or deployment-success probability. A zero limit means zero remaining allowance, not 100%.
+- The **heatmap** has SKU rows and zone columns. Its 3/2/1/0 values are display rankings, not probabilities; only an explicit restricted score maps to 0. `?` means unknown/stale data and `–` means no returned result. Colours do not incorporate quota.
+- The host validates subscription GUIDs, configured regions, integer counts (1–10), up to five distinct SKU names, up to eight distinct locations, and boolean zone selection. Invalid values are rejected rather than silently clamped.
+- Azure metric payloads and placement scope are validated server-side. Invalid upstream metrics return errors; absent quota flags remain unknown. Lookup failures and incomplete results have visible warnings. Resource Graph continuation pages are read rather than silently ignored.
+- SKU discovery is cached for 15 minutes per subscription and region. Zone-only restrictions keep the SKU in the catalogue because other zones may still be usable; consult the zonal placement results. An empty verified catalogue is not replaced with static sizes.
+- Changing any selection cancels outstanding score requests and clears the old results. Cancelled or failed batches are marked incomplete. Snapshots at least 15 minutes old have an age warning, but even newer scores can change immediately. Retrieval timestamps are not the age of Azure's underlying data.
+
+The dashboard does not create or block VMs. Compare the same Spot/regular priority, subscription, size, region, zone, and count when investigating a successful deployment after a poor score. Azure performs the authoritative validation and allocation when the VM is deployed.
+
+See [Spot VM behavior and history](https://learn.microsoft.com/azure/virtual-machines/spot-vms) and [placement-score considerations](https://learn.microsoft.com/azure/virtual-machine-scale-sets/spot-placement-score#considerations).
 
 ---
 
@@ -106,6 +123,10 @@ npm start                # starts the Express host on http://localhost:8080
 ```
 
 Open http://localhost:8080. The header shows a **LOCAL DEV** badge, and the app calls `/api/*`, which the host services using your CLI token.
+
+### Validate changes
+
+From the `webapp` directory, run `npm test` for the Node built-in regression suite and `npm run build` for Angular's production build and strict template/type checks. Tests exercise the API and frontend state with mocked Azure responses; they do not sign in, query your subscription, or create VMs.
 
 > Want live Angular reload? Run the host and the dev server in two terminals:
 > ```powershell

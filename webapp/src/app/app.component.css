@@ -183,6 +183,34 @@
   font-size: 0.8rem;
 }
 
+.warning-banner {
+  background: rgba(202, 138, 4, 0.08);
+  border: 1px solid rgba(202, 138, 4, 0.35);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.warning-banner div + div { margin-top: 0.35rem; }
+.catalog-note, .advisory-note, .heatmap-note {
+  margin-top: 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+.advisory-note summary { cursor: pointer; color: var(--accent); }
+.advisory-note p { margin-top: 0.5rem; }
+.snapshot-context {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+.snapshot-context p { color: var(--text-secondary); font-size: 0.8rem; }
+.regional-quota { margin-top: 0.75rem; }
+
 /* === Summary Tiles === */
 
 .summary {
@@ -218,6 +246,7 @@
 .tile-restricted .tile-value { color: var(--score-restricted); }
 .tile-quota { border-color: rgba(239, 68, 68, 0.4); }
 .tile-quota .tile-value { color: var(--score-low); }
+.tile-unknown .tile-value { color: var(--accent); }
 
 /* === Timestamp === */
 
@@ -282,10 +311,12 @@
 .score-medium { background: rgba(202, 138, 4, 0.1); color: var(--score-medium); }
 .score-low { background: rgba(220, 38, 38, 0.1); color: var(--score-low); }
 .score-restricted { background: rgba(107, 114, 128, 0.1); color: var(--score-restricted); }
+.score-unknown { background: rgba(37, 99, 235, 0.1); color: var(--accent); }
 
 /* Quota */
 .quota-yes { color: var(--score-high); font-size: 0.82rem; }
 .quota-no { color: var(--score-low); font-size: 0.82rem; font-weight: 600; }
+.quota-unknown { color: var(--text-secondary); font-size: 0.82rem; }
 
 /* Eviction Rate badges */
 .eviction-badge {
@@ -317,7 +348,9 @@
   margin-bottom: 1rem;
   font-size: 0.8rem;
   color: var(--text-secondary);
+  flex-wrap: wrap;
 }
+.heatmap-note { margin: 0 0 1rem; }
 .legend-item { display: flex; align-items: center; gap: 0.375rem; }
 .legend-dot {
   width: 12px;
@@ -360,6 +393,7 @@ thead .sticky-col {
 .heatmap-cell.score-medium { background: rgba(202, 138, 4, 0.12); color: var(--score-medium); }
 .heatmap-cell.score-low { background: rgba(220, 38, 38, 0.12); color: var(--score-low); }
 .heatmap-cell.score-restricted { background: rgba(107, 114, 128, 0.1); color: var(--score-restricted); }
+.heatmap-cell.score-unknown { background: rgba(37, 99, 235, 0.12); color: var(--accent); }
 .heatmap-cell.score-empty { color: var(--text-muted); }
 
 /* === Empty State === */
@@ -844,4 +878,3 @@ th.has-tooltip:focus-within .th-tooltip {
 .vm-quota-row {
   margin-top: 0.5rem;
 }
-

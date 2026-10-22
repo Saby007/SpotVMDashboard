@@ -1,5 +1,5 @@
-// Pure static host for the Angular SPA.
-// Azure calls now run on the server. In local dev we use the developer's
+// Angular SPA host and read-only Azure API proxy.
+// In local dev we use the developer's
 // `az login` session; in App Service we use the site's managed identity.
 
 const express = require('express');
@@ -20,6 +20,11 @@ const LOCAL_DEV = process.env.LOCAL_DEV
 const ARM_RESOURCE = 'https://management.azure.com/';
 const SCORE_API_VERSION = '2025-06-05';
 const DEFAULT_DESIRED_COUNT = 5;
+const CATALOG_TTL_MS = 15 * 60 * 1000;
+const SUBSCRIPTION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SKU_PATTERN = /^[a-z][a-z0-9_-]{0,127}$/i;
+const EVICTION_RATES = new Set(['0-5', '5-10', '10-15', '15-20', '20+']);
+const PLACEMENT_SCORES = new Set(['High', 'Medium', 'Low', 'RestrictedSkuNotAvailable', 'DataNotFoundOrStale']);
 const REGIONS = [
   'centralindia', 'southindia', 'westindia',
   'eastus', 'eastus2', 'westus', 'westus2', 'westus3',
@@ -50,6 +55,10 @@ const STATIC_SKU_FAMILIES = {
 const VM_FAMILY_PREFIXES = ['NC', 'ND', 'NV', 'NP', 'NM', 'NG', 'HB', 'HC', 'HX', 'DC', 'EC', 'FX'];
 
 app.use(express.json({ limit: '1mb' }));
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 
 app.use(express.static(STATIC_DIR));
 
@@ -60,6 +69,109 @@ console.log(`[auth] Runtime identity mode: ${LOCAL_DEV ? 'Azure CLI' : 'Managed 
 
 let tokenCache = null;
 const skuCatalogCache = new Map();
+
+function apiError(message, status = 502) {
+  return Object.assign(new Error(message), { status });
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function requireScope(subscriptionId, region) {
+  if (typeof subscriptionId !== 'string' || !SUBSCRIPTION_ID_PATTERN.test(subscriptionId)) {
+    throw apiError('subscriptionId must be a valid subscription GUID.', 400);
+  }
+  if (typeof region !== 'string' || !REGIONS.includes(region)) {
+    throw apiError('region must be one of the configured Azure regions.', 400);
+  }
+}
+
+function requireArray(data, field, source) {
+  if (!isRecord(data) || !Array.isArray(data[field])) {
+    throw apiError(`Azure returned an invalid ${source} response: ${field} must be an array.`);
+  }
+  return data[field];
+}
+
+function sendApiError(res, route, err) {
+  console.error(`[api] ${route} failed:`, err.message);
+  if (err.retryAfter) res.set('Retry-After', err.retryAfter);
+  return res.status(err.status || 500).json({ error: err.message });
+}
+
+function placementInput(body) {
+  if (!isRecord(body)) throw apiError('A JSON request object is required.', 400);
+  const { subscriptionId, region } = body;
+  requireScope(subscriptionId, region);
+  const desiredCount = body.desiredCount === undefined ? DEFAULT_DESIRED_COUNT : body.desiredCount;
+  if (!Number.isInteger(desiredCount) || desiredCount < 1 || desiredCount > 10) {
+    throw apiError('desiredCount must be an integer from 1 to 10.', 400);
+  }
+  if (!Array.isArray(body.desiredSizes) || body.desiredSizes.length < 1 || body.desiredSizes.length > 5
+    || !body.desiredSizes.every(item => isRecord(item) && typeof item.sku === 'string' && SKU_PATTERN.test(item.sku))) {
+    throw apiError('desiredSizes must contain 1 to 5 objects with valid SKU names.', 400);
+  }
+  const desiredSizes = body.desiredSizes.map(({ sku }) => ({ sku }));
+  if (new Set(desiredSizes.map(item => item.sku.toLowerCase())).size !== desiredSizes.length) {
+    throw apiError('desiredSizes must not contain duplicate SKUs.', 400);
+  }
+  const desiredLocations = body.desiredLocations === undefined ? [region] : body.desiredLocations;
+  if (!Array.isArray(desiredLocations) || desiredLocations.length < 1 || desiredLocations.length > 8
+    || !desiredLocations.every(location => typeof location === 'string' && REGIONS.includes(location))
+    || new Set(desiredLocations).size !== desiredLocations.length) {
+    throw apiError('desiredLocations must contain 1 to 8 distinct configured Azure regions.', 400);
+  }
+  if (body.availabilityZones !== undefined && typeof body.availabilityZones !== 'boolean') {
+    throw apiError('availabilityZones must be a boolean.', 400);
+  }
+  return { subscriptionId, region, desiredCount, desiredSizes, desiredLocations, availabilityZones: body.availabilityZones ?? true };
+}
+
+function placementResponse(data, input) {
+  const rows = requireArray(data, 'placementScores', 'placement score');
+  if (rows.length === 0) throw apiError('Azure returned no placement scores. Availability is unknown.');
+  const requestedSkus = new Map(input.desiredSizes.map(item => [item.sku.toLowerCase(), item.sku]));
+  const seen = new Set();
+  const warnings = new Set();
+  const placementScores = rows.map(row => {
+    if (!isRecord(row) || typeof row.sku !== 'string' || !requestedSkus.has(row.sku.toLowerCase())
+      || typeof row.region !== 'string' || !input.desiredLocations.includes(row.region.toLowerCase())) {
+      throw apiError('Azure returned a placement score outside the requested SKU/region scope.');
+    }
+    const availabilityZone = row.availabilityZone ?? '';
+    if (typeof availabilityZone !== 'string' || !/^\d*$/.test(availabilityZone)
+      || (!input.availabilityZones && availabilityZone !== '')) {
+      throw apiError('Azure returned an invalid availability zone in a placement score.');
+    }
+    const key = `${row.sku.toLowerCase()}:${row.region.toLowerCase()}:${availabilityZone}`;
+    if (seen.has(key)) throw apiError('Azure returned duplicate placement scores for the same SKU, region, and zone.');
+    seen.add(key);
+
+    const score = PLACEMENT_SCORES.has(row.score) ? row.score : 'Unknown';
+    let scoreDetail = null;
+    if (score === 'Unknown') {
+      scoreDetail = typeof row.score === 'string' ? `Unrecognized Azure score: ${row.score}` : 'Azure did not provide a placement score.';
+      warnings.add(`${row.sku}: ${scoreDetail} Availability is unknown, not restricted.`);
+    } else if (score === 'DataNotFoundOrStale') {
+      scoreDetail = 'Azure has no sufficiently fresh data to generate a placement score.';
+      warnings.add(`${row.sku}: placement data is missing or stale. Availability is unknown.`);
+    }
+    const isQuotaAvailable = typeof row.isQuotaAvailable === 'boolean' ? row.isQuotaAvailable : null;
+    if (isQuotaAvailable === null) {
+      warnings.add(`${row.sku}: Azure did not return a valid quota signal. Quota sufficiency is unknown.`);
+    }
+    return { sku: requestedSkus.get(row.sku.toLowerCase()), region: row.region.toLowerCase(), availabilityZone, score, scoreDetail, isQuotaAvailable };
+  });
+  for (const sku of requestedSkus.keys()) {
+    for (const region of input.desiredLocations) {
+      if (!placementScores.some(row => row.sku.toLowerCase() === sku && row.region === region)) {
+        warnings.add(`${sku} in ${region}: no placement result was returned. Do not infer unavailability.`);
+      }
+    }
+  }
+  return { placementScores, warnings: [...warnings], fetchedAt: new Date().toISOString() };
+}
 
 const runAz = (args) =>
   new Promise((resolve, reject) => {
@@ -159,9 +271,14 @@ async function armFetch(url, options = {}) {
     const detail = await response.text();
     const error = new Error(detail || `ARM request failed: ${response.status}`);
     error.status = response.status;
+    error.retryAfter = response.headers.get('Retry-After');
     throw error;
   }
-  return response.json();
+  try {
+    return await response.json();
+  } catch (err) {
+    throw apiError(`Azure returned invalid JSON: ${err.message}`);
+  }
 }
 
 function configuredSubscriptions() {
@@ -199,24 +316,54 @@ async function listSubscriptions() {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function fetchAndCategorizeSkus(subscriptionId) {
-  if (!subscriptionId) return STATIC_SKU_FAMILIES;
-  if (skuCatalogCache.has(subscriptionId)) return skuCatalogCache.get(subscriptionId);
+async function fetchAndCategorizeSkus(subscriptionId, region) {
+  const cacheKey = `${subscriptionId}:${region}`;
+  const cached = skuCatalogCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
 
   const loader = (async () => {
     const allSkus = [];
-    let url = `https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/skus?api-version=2021-07-01&$filter=resourceType%20eq%20%27virtualMachines%27`;
+    let url = `https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/skus?api-version=2021-07-01&$filter=${encodeURIComponent(`location eq '${region}'`)}`;
+    const visited = new Set();
 
     while (url) {
+      if (visited.has(url)) throw apiError('Azure returned a repeated SKU catalogue page.');
+      visited.add(url);
       const data = await armFetch(url);
-      allSkus.push(...(data.value || []));
+      allSkus.push(...requireArray(data, 'value', 'SKU catalogue'));
+      if (data.nextLink != null && (typeof data.nextLink !== 'string' || !data.nextLink.startsWith(ARM_RESOURCE))) {
+        throw apiError('Azure returned an invalid SKU catalogue nextLink.');
+      }
       url = data.nextLink || null;
     }
 
     const familyMap = new Map();
     for (const sku of allSkus) {
-      const cap = (sku.capabilities || []).find(item => item.name === 'LowPriorityCapable');
-      if (!cap || cap.value !== 'True') continue;
+      if (!isRecord(sku) || typeof sku.resourceType !== 'string') throw apiError('Azure returned an invalid SKU catalogue entry.');
+      if (sku.resourceType.toLowerCase() !== 'virtualmachines') continue;
+      if (typeof sku.name !== 'string' || !SKU_PATTERN.test(sku.name)
+        || !Array.isArray(sku.locations) || !sku.locations.every(location => typeof location === 'string')
+        || !Array.isArray(sku.capabilities) || !sku.capabilities.every(item => isRecord(item) && typeof item.name === 'string' && typeof item.value === 'string')
+        || (sku.restrictions != null && !Array.isArray(sku.restrictions))
+        || (sku.family != null && typeof sku.family !== 'string')) {
+        throw apiError('Azure returned invalid VM SKU metadata.');
+      }
+      if (!sku.locations.some(location => location.toLowerCase() === region)) continue;
+      const cap = sku.capabilities.find(item => item.name === 'LowPriorityCapable');
+      if (cap && !['true', 'false'].includes(cap.value.toLowerCase())) throw apiError('Azure returned invalid Spot capability metadata.');
+      if (!cap || cap.value.toLowerCase() !== 'true') continue;
+      const restricted = (sku.restrictions || []).some(restriction => {
+        if (!isRecord(restriction) || typeof restriction.type !== 'string') throw apiError('Azure returned an invalid SKU restriction.');
+        const type = restriction.type.toLowerCase();
+        if (type === 'zone') return false;
+        if (type !== 'location') throw apiError('Azure returned an unrecognized SKU restriction type.');
+        const locations = restriction.restrictionInfo?.locations ?? restriction.values;
+        if (!Array.isArray(locations) || !locations.every(location => typeof location === 'string')) {
+          throw apiError('Azure returned invalid SKU restriction locations.');
+        }
+        return locations.length === 0 || locations.some(location => location.toLowerCase() === region);
+      });
+      if (restricted) continue;
 
       const family = sku.family || 'unknownFamily';
       if (!familyMap.has(family)) familyMap.set(family, new Set());
@@ -235,16 +382,17 @@ async function fetchAndCategorizeSkus(subscriptionId) {
     for (const key of Object.keys(result).sort()) {
       sorted[key] = result[key];
     }
-    return Object.keys(sorted).length > 0 ? sorted : STATIC_SKU_FAMILIES;
+    return { skuFamilies: sorted, catalogFetchedAt: new Date().toISOString() };
   })();
 
-  skuCatalogCache.set(subscriptionId, loader);
+  const entry = { promise: loader, expiresAt: Date.now() + CATALOG_TTL_MS };
+  skuCatalogCache.set(cacheKey, entry);
   try {
     const result = await loader;
-    skuCatalogCache.set(subscriptionId, result);
+    entry.expiresAt = Date.now() + CATALOG_TTL_MS;
     return result;
   } catch (err) {
-    skuCatalogCache.delete(subscriptionId);
+    if (skuCatalogCache.get(cacheKey) === entry) skuCatalogCache.delete(cacheKey);
     throw err;
   }
 }
@@ -285,117 +433,151 @@ app.get('/api/subscriptions', async (_req, res) => {
 
 app.get('/api/config', async (req, res) => {
   try {
-    const subscriptionId = typeof req.query.subscriptionId === 'string' ? req.query.subscriptionId : undefined;
+    const subscriptionId = req.query.subscriptionId;
+    const region = req.query.region === undefined ? REGIONS[0] : req.query.region;
+    if (subscriptionId !== undefined) requireScope(subscriptionId, region);
+    else if (typeof region !== 'string' || !REGIONS.includes(region)) throw apiError('region must be one of the configured Azure regions.', 400);
     let skuFamilies = STATIC_SKU_FAMILIES;
+    let catalogSource = 'static';
+    let catalogFetchedAt = null;
+    const warnings = [];
     if (subscriptionId) {
       try {
-        skuFamilies = await fetchAndCategorizeSkus(subscriptionId);
+        const catalog = await fetchAndCategorizeSkus(subscriptionId, region);
+        skuFamilies = catalog.skuFamilies;
+        catalogFetchedAt = catalog.catalogFetchedAt;
+        catalogSource = 'azure';
+        if (Object.keys(skuFamilies).length === 0) {
+          warnings.push(`Azure returned no Spot-capable VM sizes without region-wide restrictions for this subscription in ${region}.`);
+        }
       } catch (err) {
         console.warn('[api] Falling back to static SKU families:', err.message);
+        warnings.push(`Live SKU discovery failed: ${err.message} Showing an unverified static list; regional support and subscription restrictions have not been checked.`);
       }
+    } else {
+      warnings.push('No subscription selected. The static SKU list is unverified; support and restrictions have not been checked.');
     }
     res.json({
       regions: REGIONS,
       skuFamilies,
-      defaultDesiredCount: DEFAULT_DESIRED_COUNT
+      defaultDesiredCount: DEFAULT_DESIRED_COUNT,
+      catalogSource,
+      catalogRegion: region,
+      catalogFetchedAt,
+      warnings
     });
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    sendApiError(res, '/api/config', err);
   }
 });
 
 app.get('/api/eviction-rates', async (req, res) => {
-  const subscriptionId = typeof req.query.subscriptionId === 'string' ? req.query.subscriptionId : '';
-  const region = typeof req.query.region === 'string' ? req.query.region : '';
-  if (!subscriptionId || !region) {
-    return res.status(400).json({ error: 'subscriptionId and region are required.' });
-  }
-
   try {
+    const { subscriptionId, region } = req.query;
+    requireScope(subscriptionId, region);
     const query = `SpotResources\n| where type =~ 'microsoft.compute/skuspotevictionrate/location'\n| where location =~ '${region}'\n| project skuName = tostring(sku.name), location, spotEvictionRate = tostring(properties.evictionRate)`;
-    const data = await armFetch('https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subscriptions: [subscriptionId], query })
-    });
-
-    const evictionMap = {};
-    for (const row of (data.data || [])) {
-      const key = (row.skuName || '').toLowerCase();
-      evictionMap[key] = row.spotEvictionRate || 'N/A';
-    }
-    res.json(evictionMap);
+    const rates = {};
+    const seenTokens = new Set();
+    let skipToken;
+    do {
+      const data = await armFetch('https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscriptions: [subscriptionId], query, options: { resultFormat: 'objectArray', $top: 1000, ...(skipToken ? { $skipToken: skipToken } : {}) } })
+      });
+      for (const row of requireArray(data, 'data', 'eviction rate')) {
+        if (!isRecord(row) || typeof row.skuName !== 'string' || !SKU_PATTERN.test(row.skuName)
+          || typeof row.location !== 'string' || row.location.toLowerCase() !== region
+          || (row.spotEvictionRate != null && row.spotEvictionRate !== '' && !EVICTION_RATES.has(row.spotEvictionRate))) {
+          throw apiError('Azure returned invalid eviction-rate data.');
+        }
+        const key = row.skuName.toLowerCase();
+        if (Object.hasOwn(rates, key)) throw apiError('Azure returned duplicate eviction-rate data for a SKU.');
+        rates[key] = row.spotEvictionRate || null;
+      }
+      skipToken = data['$skipToken'];
+      if (data.resultTruncated != null && ![true, false, 'true', 'false'].includes(data.resultTruncated)) {
+        throw apiError('Azure returned an invalid eviction-rate truncation flag.');
+      }
+      if (skipToken != null && (typeof skipToken !== 'string' || seenTokens.has(skipToken))) {
+        throw apiError('Azure returned an invalid eviction-rate continuation token.');
+      }
+      if ((data.resultTruncated === true || data.resultTruncated === 'true') && !skipToken) {
+        throw apiError('Azure returned incomplete eviction-rate data without a continuation token.');
+      }
+      if (skipToken) seenTokens.add(skipToken);
+    } while (skipToken);
+    res.json({ rates, fetchedAt: new Date().toISOString() });
   } catch (err) {
-    console.error('[api] /api/eviction-rates failed:', err.message);
-    res.status(err.status || 500).json({ error: err.message });
+    sendApiError(res, '/api/eviction-rates', err);
   }
 });
 
 app.get('/api/vm-quota', async (req, res) => {
-  const subscriptionId = typeof req.query.subscriptionId === 'string' ? req.query.subscriptionId : '';
-  const region = typeof req.query.region === 'string' ? req.query.region : '';
-  if (!subscriptionId || !region) {
-    return res.status(400).json({ error: 'subscriptionId and region are required.' });
-  }
-
   try {
+    const { subscriptionId, region } = req.query;
+    requireScope(subscriptionId, region);
     const data = await armFetch(`https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/locations/${encodeURIComponent(region)}/usages?api-version=2024-07-01`);
-    const entry = (data.value || []).find(item => ((item.name && item.name.value) || '').toLowerCase() === 'lowprioritycores');
+    const entries = requireArray(data, 'value', 'VM quota');
+    const spotEntries = entries.filter(item => isRecord(item) && typeof item.name?.value === 'string' && item.name.value.toLowerCase() === 'lowprioritycores');
+    if (spotEntries.length > 1) throw apiError('Azure returned duplicate regional Spot vCPU quota entries. Quota is unknown.');
+    const entry = spotEntries[0];
     if (!entry) {
-      return res.status(404).json({ error: 'Low priority core quota entry not found.' });
+      throw apiError('Regional Spot vCPU quota was not returned by Azure. Quota is unknown.', 404);
     }
 
-    const currentValue = entry.currentValue || 0;
-    const limit = entry.limit || 0;
+    const { currentValue, limit } = entry;
+    if (!Number.isSafeInteger(currentValue) || currentValue < 0 || !Number.isSafeInteger(limit) || limit < 0) {
+      throw apiError('Azure returned invalid regional Spot vCPU usage or limit. Quota is unknown.');
+    }
+    const remaining = Math.max(0, limit - currentValue);
     const percentUsed = limit > 0 ? Math.round((currentValue / limit) * 100) : 0;
     res.json({
       region,
       currentValue,
       limit,
+      remaining,
       percentUsed,
-      percentRemaining: Math.max(0, 100 - percentUsed),
+      percentRemaining: limit > 0 ? Math.round((remaining / limit) * 100) : 0,
       unit: entry.unit || 'Count',
-      label: (entry.name && entry.name.localizedValue) || 'Low Priority vCPUs'
+      label: 'Regional Spot vCPUs',
+      fetchedAt: new Date().toISOString()
     });
   } catch (err) {
-    console.error('[api] /api/vm-quota failed:', err.message);
-    res.status(err.status || 500).json({ error: err.message });
+    sendApiError(res, '/api/vm-quota', err);
   }
 });
 
 app.post('/api/placement-scores', async (req, res) => {
-  const { subscriptionId, region, desiredCount, desiredSizes, desiredLocations, availabilityZones } = req.body || {};
-  if (!subscriptionId || !region || !Array.isArray(desiredSizes) || desiredSizes.length === 0) {
-    return res.status(400).json({ error: 'subscriptionId, region, and desiredSizes are required.' });
-  }
-
   try {
+    const input = placementInput(req.body);
+    const { subscriptionId, region, ...payload } = input;
     const data = await armFetch(
       `https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}/providers/Microsoft.Compute/locations/${encodeURIComponent(region)}/placementScores/spot/generate?api-version=${SCORE_API_VERSION}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          availabilityZones: availabilityZones !== false,
-          desiredLocations: Array.isArray(desiredLocations) && desiredLocations.length > 0 ? desiredLocations : [region],
-          desiredCount: Math.min(Math.max(desiredCount || DEFAULT_DESIRED_COUNT, 1), 10),
-          desiredSizes
-        })
+        body: JSON.stringify(payload)
       }
     );
-    res.json(data);
+    res.json(placementResponse(data, input));
   } catch (err) {
-    console.error('[api] /api/placement-scores failed:', err.message);
-    res.status(err.status || 500).send(err.message);
+    sendApiError(res, '/api/placement-scores', err);
   }
 });
+
+app.use((err, req, res, _next) => sendApiError(res, req.path, err));
 
 // SPA fallback — any non-asset GET returns index.html so client-side routing works.
 app.get(/^\/(?!healthz|api\/).*/, (_req, res) => {
   res.sendFile(path.join(STATIC_DIR, 'index.html'));
 });
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`Spot VM Dashboard running on port ${PORT} (LOCAL_DEV=${LOCAL_DEV})`);
-});
+if (require.main === module) {
+  const PORT = process.env.PORT || 8080;
+  app.listen(PORT, () => {
+    console.log(`Spot VM Dashboard running on port ${PORT} (LOCAL_DEV=${LOCAL_DEV})`);
+  });
+}
+
+module.exports = app;
