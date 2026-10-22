@@ -279,6 +279,49 @@ test('reads all eviction-rate pages and keeps absent rates unknown', async () =>
   assert.equal(data.rates.standard_d8s_v5, null);
   assert.equal(azureCalls.length, 2);
   assert.equal(azureCalls[1].body.options.$skipToken, 'next-page');
+  for (const call of azureCalls) {
+    assert.equal(call.body.options.authorizationScopeFilter, 'AtScopeAndAbove');
+    assert.deepEqual(call.body.subscriptions, [subscriptionId]);
+  }
+});
+
+test('history includes shared provider statistics without changing other subscription scopes', async () => {
+  upstream = async call => {
+    if (call.url.includes('Microsoft.ResourceGraph/resources')) {
+      return json({ data: call.body.options.authorizationScopeFilter === 'AtScopeAndAbove'
+        ? [{ skuName: sku, location: region, spotEvictionRate: '0-5' }] : [] });
+    }
+    if (call.url.includes('/usages?')) {
+      return json({ value: [{ name: { value: 'lowPriorityCores' }, currentValue: 0, limit: 100 }] });
+    }
+    return json({ placementScores: [score()] });
+  };
+  const history = await request(`/api/eviction-rates?subscriptionId=${subscriptionId}&region=${region}`);
+  assert.equal(history.status, 200);
+  assert.equal((await history.json()).rates[sku.toLowerCase()], '0-5');
+  const graphCall = azureCalls[0];
+  assert.deepEqual(graphCall.body.subscriptions, [subscriptionId]);
+  assert.equal(graphCall.body.options.authorizationScopeFilter, 'AtScopeAndAbove');
+  assert.match(graphCall.body.query, /^SpotResources\n/);
+  assert.match(graphCall.body.query, /microsoft\.compute\/skuspotevictionrate\/location/);
+  assert.ok(graphCall.body.query.includes(`where location =~ '${region}'`));
+  assert.equal((await request(`/api/vm-quota?subscriptionId=${subscriptionId}&region=${region}`)).status, 200);
+  assert.equal((await request('/api/placement-scores', input())).status, 200);
+  assert.ok(azureCalls.slice(1).every(call => call.url.includes(`/subscriptions/${subscriptionId}/`)));
+  assert.equal(azureCalls[1].body, undefined);
+  assert.equal(Object.hasOwn(azureCalls[2].body, 'options'), false);
+});
+
+test('genuinely absent history remains empty after correcting authorization scope', async () => {
+  upstream = async call => {
+    assert.equal(call.body.options.authorizationScopeFilter, 'AtScopeAndAbove');
+    return json({ data: [], resultTruncated: 'false' });
+  };
+  const response = await request(`/api/eviction-rates?subscriptionId=${subscriptionId}&region=${region}`);
+  assert.equal(response.status, 200);
+  const history = await response.json();
+  assert.deepEqual(history.rates, {});
+  assert.ok(Number.isFinite(Date.parse(history.fetchedAt)));
 });
 
 for (const data of [

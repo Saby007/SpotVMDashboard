@@ -324,6 +324,21 @@ test('optional data failures are visible and do not imply zero eviction risk or 
   assert.equal(events.at(-1).type, 'done');
 });
 
+test('successful empty history is displayed as unknown rather than a fabricated rate', async () => {
+  const events = await runService(async url => {
+    const body = String(url).includes('eviction-rates') ? { rates: {}, fetchedAt: new Date().toISOString() }
+      : String(url).includes('vm-quota') ? quota
+        : { placementScores: [row()], warnings: [], fetchedAt: new Date().toISOString() };
+    return new Response(JSON.stringify(body));
+  });
+  const scores = events.find(event => event.type === 'scores').scores;
+  assert.equal(scores[0].evictionRate, null);
+  assert.ok(events.some(event => event.type === 'warning' && /Eviction history is unknown/.test(event.message)));
+  const { app } = component();
+  assert.equal(app.evictionRate(scores[0].evictionRate), 'Unknown');
+  assert.equal(events.at(-1).type, 'done');
+});
+
 test('zero regional quota conflicting with sufficient API quota produces a warning', async () => {
   const events = await runService(async url => {
     const body = String(url).includes('eviction-rates') ? { rates: { standard_d4s_v5: '0-5' } }

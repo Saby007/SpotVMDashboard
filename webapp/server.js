@@ -511,7 +511,17 @@ app.get('/api/eviction-rates', async (req, res) => {
       const data = await armFetch('https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subscriptions: [subscriptionId], query, options: { resultFormat: 'objectArray', $top: 1000, ...(skipToken ? { $skipToken: skipToken } : {}) } })
+        body: JSON.stringify({
+          subscriptions: [subscriptionId],
+          query,
+          // Shared Spot statistics live above the subscription resource scope.
+          options: {
+            resultFormat: 'objectArray',
+            authorizationScopeFilter: 'AtScopeAndAbove',
+            $top: 1000,
+            ...(skipToken ? { $skipToken: skipToken } : {})
+          }
+        })
       });
       for (const row of requireArray(data, 'data', 'eviction rate')) {
         if (!isRecord(row) || typeof row.skuName !== 'string' || !SKU_PATTERN.test(row.skuName)
