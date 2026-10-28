@@ -25,7 +25,7 @@ function typescriptModule(file) {
 let AppComponent;
 let SpotScoreService;
 const config = {
-  regions: ['centralindia', 'eastus'], skuFamilies: { 'General purpose - Dsv5-series': ['Standard_D4s_v5'] },
+  regions: ['centralindia', 'indiasouthcentral', 'jioindiawest', 'southindia', 'westindia'], skuFamilies: { 'General purpose - Dsv5-series': ['Standard_D4s_v5'] },
   regionsFetchedAt: new Date().toISOString(), defaultDesiredCount: 5, maxDesiredCount: 2147483647,
   catalogRegion: 'centralindia', catalogSource: 'azure', catalogFetchedAt: new Date().toISOString(), warnings: []
 };
@@ -117,12 +117,12 @@ test('newer configuration wins over an older outstanding request', () => {
   const newConfig = new Subject();
   service.getConfig = (_subscription, region) => !region || region === 'centralindia' ? oldConfig : newConfig;
   app.onSubscriptionChange();
-  app.selectedRegion = 'eastus';
+  app.selectedRegion = 'southindia';
   app.onRegionChange();
-  newConfig.next({ ...config, catalogRegion: 'eastus' });
+  newConfig.next({ ...config, catalogRegion: 'southindia' });
   oldConfig.next(config);
-  assert.equal(app.config.catalogRegion, 'eastus');
-  assert.equal(app.selectedRegion, 'eastus');
+  assert.equal(app.config.catalogRegion, 'southindia');
+  assert.equal(app.selectedRegion, 'southindia');
   app.ngOnDestroy();
 });
 
@@ -252,8 +252,8 @@ test('configuration requests do not hard-code a region in the client', () => {
   const url = new URL(requestedUrl, 'https://example.invalid');
   assert.equal(url.searchParams.get('subscriptionId'), subscriptionId);
   assert.equal(url.searchParams.has('region'), false);
-  service.getConfig(subscriptionId, 'spaincentral');
-  assert.equal(new URL(requestedUrl, 'https://example.invalid').searchParams.get('region'), 'spaincentral');
+  service.getConfig(subscriptionId, 'westindia');
+  assert.equal(new URL(requestedUrl, 'https://example.invalid').searchParams.get('region'), 'westindia');
 });
 
 test('snapshot age warning uses the oldest batch, not completion time', () => {

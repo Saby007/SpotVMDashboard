@@ -70,7 +70,7 @@ async function requireDiscoveredRegions(subscriptionId, regions) {
   const discovery = await fetchRegionDiscovery(subscriptionId);
   const unknown = regions.filter(region => !discovery.regions.includes(region));
   if (unknown.length) {
-    throw apiError(`Regions are not in this subscription's discovered Azure VM regions: ${[...new Set(unknown)].join(', ')}.`, 400);
+    throw apiError(`Regions are not in this subscription's discovered Azure VM regions in India: ${[...new Set(unknown)].join(', ')}.`, 400);
   }
   return discovery;
 }
@@ -363,6 +363,10 @@ async function fetchRegionDiscovery(subscriptionId) {
         throw apiError('Azure returned invalid subscription region metadata.');
       }
       if (location.metadata.regionType !== 'Physical') continue;
+      if (typeof location.metadata.geography !== 'string' || !location.metadata.geography.trim()) {
+        throw apiError('Azure returned invalid region geography metadata.');
+      }
+      if (location.metadata.geography.trim().toLowerCase() !== 'india') continue;
       if (typeof location.displayName !== 'string' || !location.displayName.trim()) {
         throw apiError('Azure returned invalid region display metadata.');
       }
@@ -370,7 +374,7 @@ async function fetchRegionDiscovery(subscriptionId) {
         regions.add(location.name);
       }
     }
-    if (regions.size === 0) throw apiError('Azure returned no verified physical VM regions. Region discovery is unavailable.');
+    if (regions.size === 0) throw apiError('Azure returned no verified physical VM regions in India. Region discovery is unavailable.');
     return { regions: [...regions].sort(), fetchedAt: new Date().toISOString() };
   });
 }
@@ -473,11 +477,11 @@ app.get('/api/config', async (req, res) => {
     const preferredRegion = (process.env.DEFAULT_REGION || 'centralindia').trim().toLowerCase();
     const region = req.query.region ?? (discovery.regions.includes(preferredRegion) ? preferredRegion : discovery.regions[0]);
     if (!discovery.regions.includes(region)) {
-      throw apiError('region must be one of this subscription\'s discovered Azure VM regions.', 400);
+      throw apiError('region must be one of this subscription\'s discovered Azure VM regions in India.', 400);
     }
     const warnings = [];
     if (req.query.region === undefined && region !== preferredRegion) {
-      warnings.push(`The preferred default region ${preferredRegion || '(empty)'} is not in Azure's discovered VM regions. Selected ${region} from the verified list.`);
+      warnings.push(`The preferred default region ${preferredRegion || '(empty)'} is not in Azure's discovered VM regions in India. Selected ${region} from the verified list.`);
     }
     const catalog = await fetchAndCategorizeSkus(subscriptionId, region);
     if (Object.keys(catalog.skuFamilies).length === 0) {

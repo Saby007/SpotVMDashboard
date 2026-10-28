@@ -47,9 +47,9 @@
       </div>
 
       <div class="control-group">
-        <label for="region">Region</label>
+        <label for="region">India region</label>
         <select id="region" [(ngModel)]="selectedRegion" (ngModelChange)="onRegionChange()">
-          <option value="" disabled>Select region</option>
+          <option value="" disabled>Select India region</option>
           <option *ngFor="let r of config.regions" [value]="r">{{ r }}</option>
         </select>
       </div>
@@ -93,7 +93,7 @@
     </div>
 
     <p class="catalog-note" *ngIf="!configLoading && !configError">
-      Regions: Azure subscription metadata and VM-provider support · Retrieved {{ config.regionsFetchedAt | date:'short' }}.
+      India regions: Azure geography metadata and VM-provider support · Retrieved {{ config.regionsFetchedAt | date:'short' }}.
       SKU catalogue: Azure, filtered by subscription and region-wide restrictions · Retrieved {{ config.catalogFetchedAt | date:'short' }}.
       Region discovery and SKU listing do not guarantee Spot capacity; zone restrictions can still apply.
     </p>

@@ -26,16 +26,24 @@ const catalogSku = (name, overrides = {}) => ({
 });
 const catalogQuery = (id = `00000000-0000-0000-0000-${String(catalogId++).padStart(12, '0')}`, location = region) =>
   `/api/config?subscriptionId=${id}&region=${location}`;
+const indiaRegions = ['centralindia', 'indiasouthcentral', 'jioindiawest', 'southindia', 'westindia'];
 const locationRows = [
-  { name: region, displayName: 'Central India', metadata: { regionType: 'Physical' } },
-  { name: 'eastus', displayName: 'East US', metadata: { regionType: 'Physical' } },
-  { name: 'spaincentral', displayName: 'Spain Central', metadata: { regionType: 'Physical' } },
-  { name: 'futureregion1', displayName: 'Future Region', metadata: { regionType: 'Physical' } },
-  { name: 'unsupportedregion', displayName: 'No VM Provider', metadata: { regionType: 'Physical' } },
-  { name: 'global', displayName: 'Global', metadata: { regionType: 'Logical' } }
+  { name: region, displayName: 'Central India', metadata: { regionType: 'Physical', geography: 'India' } },
+  { name: 'eastus', displayName: 'East US', metadata: { regionType: 'Physical', geography: 'United States' } },
+  { name: 'southindia', displayName: 'South India', metadata: { regionType: 'Physical', geography: 'India' } },
+  { name: 'westindia', displayName: 'West India', metadata: { regionType: 'Physical', geography: 'India' } },
+  { name: 'indiasouthcentral', displayName: 'India South Central', metadata: { regionType: 'Physical', geography: 'India' } },
+  { name: 'jioindiawest', displayName: 'Jio India West', metadata: { regionType: 'Physical', geography: 'India' } },
+  { name: 'jioindiacentral', displayName: 'Jio India Central', metadata: { regionType: 'Physical', geography: 'India' } },
+  { name: 'spaincentral', displayName: 'Spain Central', metadata: { regionType: 'Physical', geography: 'Spain' } },
+  { name: 'futureregion1', displayName: 'Future Region', metadata: { regionType: 'Physical', geography: 'Other' } },
+  { name: 'outsideindia', displayName: 'Overseas India', metadata: { regionType: 'Physical', geography: 'United States' } },
+  { name: 'unsupportedregion', displayName: 'No VM Provider', metadata: { regionType: 'Physical', geography: 'India' } },
+  { name: 'global', displayName: 'Global', metadata: { regionType: 'Logical', geography: 'India' } }
 ];
 const providerMetadata = { resourceTypes: [{
-  resourceType: 'virtualMachines', locations: ['Central India', 'East US', 'Spain Central', 'Future Region']
+  resourceType: 'virtualMachines',
+  locations: ['Central India', 'South India', 'West India', 'India South Central', 'Jio India West', 'East US', 'Spain Central', 'Future Region', 'Overseas India']
 }] };
 const discoveryResponse = async call => call.url.includes('/locations?')
   ? json({ value: locationRows }) : json(providerMetadata);
@@ -396,7 +404,7 @@ test('catalogue cache is scoped by subscription and region and expires after 15 
   await request(route);
   await request(route);
   assert.equal(azureCalls.length, 1);
-  await request(route.replace('centralindia', 'eastus'));
+  await request(route.replace('centralindia', 'southindia'));
   assert.equal(azureCalls.length, 2);
   await request(catalogQuery());
   assert.equal(azureCalls.length, 3);
@@ -405,14 +413,16 @@ test('catalogue cache is scoped by subscription and region and expires after 15 
   assert.equal(azureCalls.length, 4);
 });
 
-test('region discovery uses Azure metadata and VM-provider support, not a fixed list', async () => {
+test('region discovery offers only physical India regions with Azure VM-provider support', async () => {
   upstream = async () => json({ value: [] });
   const response = await request(catalogQuery());
   const config = await response.json();
   assert.equal(response.status, 200);
-  assert.deepEqual(config.regions, ['centralindia', 'eastus', 'futureregion1', 'spaincentral']);
+  assert.deepEqual(config.regions, indiaRegions);
   assert.equal(config.regions.includes('global'), false);
   assert.equal(config.regions.includes('unsupportedregion'), false);
+  assert.equal(config.regions.includes('jioindiacentral'), false);
+  assert.equal(config.regions.includes('outsideindia'), false);
   assert.equal(config.maxDesiredCount, 2147483647);
   assert.ok(Number.isFinite(Date.parse(config.regionsFetchedAt)));
   assert.equal(discoveryCalls.length, 2);
@@ -427,13 +437,89 @@ for (const count of [11, 100, 2147483647]) {
   });
 }
 
-test('a newly discovered region is accepted as API host and desired location', async () => {
-  upstream = async () => json({ placementScores: [score({ region: 'spaincentral' })] });
-  const response = await request('/api/placement-scores', input({ region: 'spaincentral', desiredLocations: ['spaincentral'] }));
+test('a newly discovered India region is accepted without hard-coded region names', async () => {
+  const id = new URL(catalogQuery(), origin).searchParams.get('subscriptionId');
+  discoveryUpstream = async call => call.url.includes('/locations?')
+    ? json({ value: locationRows.map(location => location.name === 'futureregion1'
+      ? { ...location, metadata: { regionType: 'Physical', geography: ' India ' } } : location) })
+    : json(providerMetadata);
+  upstream = async () => json({ placementScores: [score({ region: 'futureregion1' })] });
+  const response = await request('/api/placement-scores', input({ subscriptionId: id, region: 'futureregion1', desiredLocations: ['futureregion1'] }));
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).placementScores[0].region, 'spaincentral');
-  assert.match(azureCalls[0].url, /\/locations\/spaincentral\/placementScores/);
+  assert.equal((await response.json()).placementScores[0].region, 'futureregion1');
+  assert.match(azureCalls[0].url, /\/locations\/futureregion1\/placementScores/);
 });
+
+for (const indiaRegion of indiaRegions) {
+  test(`configuration and placement accept verified India region ${indiaRegion}`, async () => {
+    upstream = async call => call.url.includes('/skus?')
+      ? json({ value: [] }) : json({ placementScores: [score({ region: indiaRegion })] });
+    const configResponse = await request(catalogQuery(subscriptionId, indiaRegion));
+    assert.equal(configResponse.status, 200);
+    const config = await configResponse.json();
+    assert.deepEqual(config.regions, indiaRegions);
+    assert.equal(config.catalogRegion, indiaRegion);
+    const response = await request('/api/placement-scores', input({ region: indiaRegion, desiredLocations: [indiaRegion] }));
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).placementScores[0].region, indiaRegion);
+  });
+}
+
+for (const endpoint of ['config', 'vm-quota', 'eviction-rates']) {
+  test(`${endpoint} rejects discovered non-India regions before making regional Azure calls`, async () => {
+    for (const overseasRegion of ['eastus', 'spaincentral', 'outsideindia']) {
+      const response = await request(`/api/${endpoint}?subscriptionId=${subscriptionId}&region=${overseasRegion}`);
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /India/);
+    }
+    assert.equal(azureCalls.length, 0);
+  });
+}
+
+for (const overrides of [
+  { region: 'eastus' },
+  { desiredLocations: ['eastus'] },
+  { desiredLocations: [region, 'spaincentral'] },
+  { region: 'spaincentral', desiredLocations: [region] }
+]) {
+  test(`placement rejects non-India API hosts and desired locations: ${JSON.stringify(overrides)}`, async () => {
+    const response = await request('/api/placement-scores', input(overrides));
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /India/);
+    assert.equal(azureCalls.length, 0);
+  });
+}
+
+test('empty India discovery fails explicitly without an overseas fallback and can be retried', async () => {
+  const route = catalogQuery();
+  discoveryUpstream = async call => call.url.includes('/locations?')
+    ? json({ value: locationRows.filter(location => location.metadata.geography !== 'India') })
+    : json(providerMetadata);
+  let response = await request(route);
+  assert.equal(response.status, 502);
+  const error = await response.json();
+  assert.match(error.error, /no verified physical VM regions in India/);
+  assert.equal(Object.hasOwn(error, 'regions'), false);
+  assert.equal(Object.hasOwn(error, 'skuFamilies'), false);
+  assert.equal(azureCalls.length, 0);
+  discoveryUpstream = discoveryResponse;
+  upstream = async () => json({ value: [] });
+  response = await request(route);
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).regions, indiaRegions);
+});
+
+for (const geography of [undefined, null, '', 123, {}]) {
+  test(`invalid region geography fails explicitly: ${JSON.stringify(geography)}`, async () => {
+    discoveryUpstream = async call => call.url.includes('/locations?')
+      ? json({ value: [{ ...locationRows[0], metadata: { regionType: 'Physical', geography } }] })
+      : json(providerMetadata);
+    const response = await request(catalogQuery());
+    assert.equal(response.status, 502);
+    assert.match((await response.json()).error, /geography metadata/);
+    assert.equal(azureCalls.length, 0);
+  });
+}
 
 test('well-formed but undiscovered regions are rejected before scoring', async () => {
   const response = await request('/api/placement-scores', input({ region: 'notarealregion' }));
@@ -454,13 +540,14 @@ test('configuration requires a subscription rather than offering static regions 
 
 test('initial region comes from verified discovery, with a warning for an unavailable preference', async () => {
   const previous = process.env.DEFAULT_REGION;
-  process.env.DEFAULT_REGION = 'notarealregion';
+  process.env.DEFAULT_REGION = 'eastus';
   upstream = async () => json({ value: [] });
   try {
     const response = await request(catalogQuery().replace('&region=centralindia', ''));
     const config = await response.json();
     assert.equal(response.status, 200);
     assert.ok(config.regions.includes(config.catalogRegion));
+    assert.equal(config.catalogRegion, 'centralindia');
     assert.ok(config.warnings.some(warning => /preferred default region/.test(warning)));
   } finally {
     process.env.DEFAULT_REGION = previous;
@@ -478,7 +565,7 @@ test('region discovery failure returns an error and is retried, never a fixed fa
   upstream = async () => json({ value: [] });
   response = await request(route);
   assert.equal(response.status, 200);
-  assert.ok((await response.json()).regions.includes('spaincentral'));
+  assert.deepEqual((await response.json()).regions, indiaRegions);
 });
 
 for (const invalidResponse of [
@@ -510,9 +597,9 @@ test('region discovery follows continuation pages and caches per subscription un
   };
   upstream = async () => json({ value: [] });
   let response = await request(route);
-  assert.ok((await response.json()).regions.includes('spaincentral'));
+  assert.deepEqual((await response.json()).regions, indiaRegions);
   assert.equal(discoveryCalls.length, 3);
-  await request(route.replace('centralindia', 'eastus'));
+  await request(route.replace('centralindia', 'southindia'));
   assert.equal(discoveryCalls.length, 3);
   clock += 15 * 60 * 1000 + 1;
   discoveryUpstream = async () => json({ error: 'Unavailable' }, 503);
